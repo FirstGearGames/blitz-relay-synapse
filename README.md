@@ -126,6 +126,10 @@ See the `BlitzRelay.Protocol` library for the full message codec API.
 | `BLITZ_RELAY_CONNECTION_KEY`   | Key used to authenticate UDP connections (required) |
 | `BLITZ_RELAY_HTTP_ADMIN_TOKEN` | Token for HTTP admin API authentication (required)  |
 
+## Acknowledgements
+
+Blitz Relay uses [LiteNetLib](https://github.com/RevenantX/LiteNetLib) by RevenantX for UDP networking.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.

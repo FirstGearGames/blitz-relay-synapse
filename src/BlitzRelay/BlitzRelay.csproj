@@ -42,4 +42,8 @@
         <SelfContained>true</SelfContained>
     </PropertyGroup>
 
+    <Target Name="ValidateFlavour" BeforeTargets="Build" Condition="'$(Flavour)' != ''">
+        <Error Condition="'$(Flavour)' != 'slim' and '$(Flavour)' != 'standalone' and '$(Flavour)' != 'native'" Text="Unknown Flavour '$(Flavour)'. Expected: slim, standalone, or native." />
+    </Target>
+
 </Project>

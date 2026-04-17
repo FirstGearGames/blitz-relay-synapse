@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-relay:
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            flavour: slim
+          - rid: win-x64
+            os: windows-latest
+            flavour: standalone
+          - rid: win-x64
+            os: windows-latest
+            flavour: native
+          - rid: linux-x64
+            os: ubuntu-latest
+            flavour: slim
+          - rid: linux-x64
+            os: ubuntu-latest
+            flavour: standalone
+          - rid: linux-x64
+            os: ubuntu-latest
+            flavour: native
+          - rid: osx-arm64
+            os: macos-latest
+            flavour: slim
+          - rid: osx-arm64
+            os: macos-latest
+            flavour: standalone
+          - rid: osx-arm64
+            os: macos-latest
+            flavour: native
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: '10.x'
+
+      - name: Publish BlitzRelay
+        run: dotnet publish src/BlitzRelay/BlitzRelay.csproj -c Release -r ${{ matrix.rid }} -p:PublishSingleFile=true -p:Flavour=${{ matrix.flavour }}
+
+      - name: Upload BlitzRelay (${{ matrix.rid }}-${{ matrix.flavour }})
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: BlitzRelay-${{ matrix.rid }}-${{ matrix.flavour }}
+          path: src/BlitzRelay/bin/Release/net10.0/${{ matrix.rid }}/publish/
+
+  build-protocol:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: '10.x'
+
+      - name: Build BlitzRelay.Protocol
+        run: dotnet build src/BlitzRelay.Protocol/BlitzRelay.Protocol.csproj -c Release
+
+      - name: Upload BlitzRelay.Protocol
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: BlitzRelay.Protocol
+          path: src/BlitzRelay.Protocol/bin/Release/netstandard2.1/

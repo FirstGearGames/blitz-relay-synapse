@@ -84,6 +84,10 @@ jobs:
       DIST_DIR: dist
 
     steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v5.0.0
         with:
@@ -117,5 +121,5 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$DIST_DIR"/* --clobber
           else
-            gh release create "$tag" "$DIST_DIR"/* --generate-notes --title "$tag"
+            gh release create "$tag" "$DIST_DIR"/* --verify-tag --generate-notes --title "$tag"
           fi

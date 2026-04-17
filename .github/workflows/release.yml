@@ -74,3 +74,48 @@ jobs:
         with:
           name: BlitzRelay.Protocol
           path: src/BlitzRelay.Protocol/bin/Release/netstandard2.1/
+
+  release:
+    needs: [ build-relay, build-protocol ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DIST_DIR: dist
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5.0.0
+        with:
+          path: artifacts
+
+      - name: Package artifacts
+        run: |
+          mkdir -p "$DIST_DIR"
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            case "$name" in
+              *win-*)
+                (cd "$dir" && zip -r "../../$DIST_DIR/${name}.zip" .)
+                ;;
+              *)
+                tar -czf "../$DIST_DIR/${name}.tar.gz" -C "$dir" .
+                ;;
+            esac
+          done
+
+      - name: Generate checksums
+        run: cd "$DIST_DIR" && sha256sum ./* > checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$DIST_DIR"/* --clobber
+          else
+            gh release create "$tag" "$DIST_DIR"/* --verify-tag --generate-notes --title "$tag"
+          fi

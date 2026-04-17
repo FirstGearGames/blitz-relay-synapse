@@ -51,6 +51,11 @@ export BLITZ_RELAY_CONNECTION_KEY="your-connection-key"
 export BLITZ_RELAY_HTTP_ADMIN_TOKEN="your-admin-token"
 ```
 
+```powershell
+$env:BLITZ_RELAY_CONNECTION_KEY = "your-connection-key"
+$env:BLITZ_RELAY_HTTP_ADMIN_TOKEN = "your-admin-token"
+```
+
 Then run the server:
 
 ```bash

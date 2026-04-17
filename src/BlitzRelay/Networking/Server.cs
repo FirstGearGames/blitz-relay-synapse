@@ -1,0 +1,919 @@
+using BlitzRelay.Protocol;
+using BlitzRelay.Rooms;
+using LiteNetLib;
+using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+
+namespace BlitzRelay.Networking;
+
+internal sealed class Server : IDisposable
+{
+	private static readonly TimeSpan PollDelay = TimeSpan.FromMilliseconds(15);
+
+	private static readonly TimeSpan HostClaimTimeout = TimeSpan.FromSeconds(10);
+
+	private readonly NetManager _netManager;
+
+	private readonly ILogger<Server> _logger;
+
+	private readonly Dictionary<string, Room> _roomsByCode;
+
+	private readonly Lock _mutex = new();
+
+	private readonly int _port;
+
+	private readonly string _connectionKey;
+
+	private bool _disposed;
+
+	public Server(int port, string connectionKey, ILogger<Server> logger)
+	{
+		_port = port;
+
+		_connectionKey = connectionKey;
+
+		_logger = logger;
+
+		_roomsByCode = new Dictionary<string, Room>(StringComparer.OrdinalIgnoreCase);
+
+		EventBasedNetListener listener = new();
+
+		listener.ConnectionRequestEvent += HandleConnectionRequest;
+
+		listener.PeerConnectedEvent += HandlePeerConnected;
+
+		listener.PeerDisconnectedEvent += HandlePeerDisconnected;
+
+		listener.NetworkReceiveEvent += HandleNetworkReceive;
+
+		listener.NetworkErrorEvent += HandleNetworkError;
+
+		listener.NetworkLatencyUpdateEvent += HandleNetworkLatencyUpdate;
+
+		_netManager = new NetManager(listener)
+		{
+			AutoRecycle = true,
+
+			UnsyncedEvents = false,
+
+			UpdateTime = 15,
+
+			PingInterval = 2000,
+
+			DisconnectTimeout = 30000,
+
+			ChannelsCount = 1,
+		};
+	}
+
+	public async Task<int> RunAsync(CancellationToken cancellationToken)
+	{
+		ObjectDisposedException.ThrowIf(_disposed, this);
+
+		if (!_netManager.Start(_port))
+		{
+			Log.FailedToStartRelay(_logger, _port);
+
+			return 1;
+		}
+
+		Log.RelayServerStarted(_logger, _port, _netManager.ChannelsCount, _netManager.PingInterval, _netManager.DisconnectTimeout);
+
+		try
+		{
+			while (!cancellationToken.IsCancellationRequested)
+			{
+				_netManager.PollEvents();
+
+				ExpirePendingHostClaims();
+
+				await Task.Delay(PollDelay, cancellationToken);
+			}
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// Operation cancelled, do nothing.
+		}
+		finally
+		{
+			Log.RelayServerStopping(_logger);
+
+			_netManager.Stop();
+		}
+
+		return 0;
+	}
+
+	public bool TryCreateReservedRoom(ushort maximumClients, string displayName, bool isPublic, IReadOnlyDictionary<string, string>? metadata, out RoomSnapshot? snapshot, out ErrorCode errorCode)
+	{
+		lock (_mutex)
+		{
+			string roomCode;
+
+			do
+			{
+				roomCode = RoomCode.Generate();
+			}
+			while (_roomsByCode.ContainsKey(roomCode));
+
+			Room room = new()
+			{
+				Code = roomCode,
+
+				Kind = RoomKind.PersistentReserved,
+
+				DisplayName = displayName,
+
+				IsPublic = isPublic,
+
+				MaximumClients = maximumClients,
+			};
+
+			if (metadata is not null)
+			{
+				foreach ((string key, string value) in metadata)
+				{
+					room.Metadata[key] = value;
+				}
+			}
+
+			_roomsByCode.Add(room.Code, room);
+
+			snapshot = RoomSnapshot.FromRoom(room);
+
+			errorCode = default(ErrorCode);
+
+			return true;
+		}
+	}
+
+	public IReadOnlyList<RoomSnapshot> GetRoomSnapshots()
+	{
+		lock (_mutex)
+		{
+			RoomSnapshot[] roomSnapshots = new RoomSnapshot[_roomsByCode.Count];
+
+			int index = 0;
+
+			foreach (Room room in _roomsByCode.Values)
+			{
+				roomSnapshots[index++] = RoomSnapshot.FromRoom(room);
+			}
+
+			return roomSnapshots;
+		}
+	}
+
+	public RoomSnapshot? GetRoomSnapshot(string roomCode)
+	{
+		lock (_mutex)
+		{
+			return _roomsByCode.TryGetValue(roomCode, out Room? room) ? RoomSnapshot.FromRoom(room) : null;
+		}
+	}
+
+	public bool DeleteRoom(string roomCode)
+	{
+		lock (_mutex)
+		{
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room)) return false;
+
+			CloseRoomLocked(room, ErrorCode.RoomClosed);
+
+			return true;
+		}
+	}
+
+	public bool HasRoomHostToken(string roomCode, string roomHostToken)
+	{
+		lock (_mutex)
+		{
+			return _roomsByCode.TryGetValue(roomCode, out Room? room) && !string.IsNullOrWhiteSpace(room.HostToken) && string.Equals(room.HostToken, roomHostToken, StringComparison.OrdinalIgnoreCase);
+		}
+	}
+
+	public void Dispose()
+	{
+		if (_disposed) return;
+
+		_disposed = true;
+
+		_netManager.Stop();
+	}
+
+	private void HandleConnectionRequest(ConnectionRequest request)
+	{
+		try
+		{
+			request.AcceptIfKey(_connectionKey);
+		}
+		catch (Exception exception)
+		{
+			Log.ConnectionRequestRejected(_logger, request.RemoteEndPoint, exception);
+
+			request.Reject();
+		}
+	}
+
+	private void HandlePeerConnected(NetPeer peer)
+	{
+		PeerConnection session = GetOrCreateSession(peer);
+
+		Log.PeerConnected(_logger, peer.Id, session.Endpoint);
+	}
+
+	private void HandlePeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
+	{
+		lock (_mutex)
+		{
+			PeerConnection session = peer.Tag as PeerConnection ?? new PeerConnection(peer);
+
+			peer.Tag = session;
+
+			Log.PeerDisconnected(_logger, peer.Id, session.Endpoint, session.Role, disconnectInfo.Reason);
+
+			PeerRole role = session.Role;
+
+			Room? room = session.Room;
+
+			int virtualClientId = session.VirtualClientId;
+
+			if (room is not null && ReferenceEquals(room.PendingHostPromotionPeer, session))
+			{
+				bool ackReceived = room.PendingHostPromotionAckReceived;
+
+				session.Clear();
+
+				if (ackReceived)
+				{
+					room.PendingHostPromotionPeer = null;
+
+					room.PendingHostPromotionVirtualClientId = 0;
+
+					room.PendingHostPromotionAckReceived = false;
+				}
+				else
+				{
+					room.ClearPendingHostClaim();
+
+					NotifyClientsHostAvailabilityLocked(room, isAvailable: false);
+
+					_ = TryPromoteNextClientToHostLocked(room);
+				}
+
+				return;
+			}
+
+			if (role == PeerRole.Host && room is not null)
+			{
+				session.Clear();
+
+				if (room.Kind == RoomKind.EphemeralHostOwned)
+				{
+					_roomsByCode.Remove(room.Code);
+
+					foreach ((int key, PeerConnection client) in room.ClientsByVirtualId)
+					{
+						Send(client, MessageCodec.CreateDisconnected(key), DeliveryMethod.ReliableOrdered);
+
+						client.Clear();
+
+						DisconnectPeer(client);
+					}
+
+					room.ClientsByVirtualId.Clear();
+
+					Log.RoomTornDownBecauseHostDisconnected(_logger, room.Code);
+
+					return;
+				}
+
+				room.Host = null;
+
+				room.HostToken = null;
+
+				room.ClearPendingHostClaim();
+
+				NotifyClientsHostAvailabilityLocked(room, isAvailable: false);
+
+				_ = TryPromoteNextClientToHostLocked(room);
+
+				return;
+			}
+
+			if (role == PeerRole.Client && room is not null)
+			{
+				room.ClientsByVirtualId.Remove(virtualClientId);
+
+				session.Clear();
+
+				if (room is { HasActiveHost: true, Host: not null })
+				{
+					Send(room.Host, MessageCodec.CreateDisconnected(virtualClientId), DeliveryMethod.ReliableOrdered);
+				}
+				else if (room is { Kind: RoomKind.PersistentReserved, HasPendingHostClaim: false })
+				{
+					_ = TryPromoteNextClientToHostLocked(room);
+				}
+
+				return;
+			}
+
+			session.Clear();
+		}
+	}
+
+	private void HandleNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
+	{
+		PeerConnection session = GetOrCreateSession(peer);
+
+		byte[] payload = reader.GetRemainingBytes();
+
+		Log.RelayPayloadReceived(_logger, peer.Id, payload.Length, channelNumber, deliveryMethod);
+
+		if (payload.Length == 0) return;
+
+		if (!MessageCodec.TryReadMessageType(payload, out MessageType messageType)) return;
+
+		switch (messageType)
+		{
+			case MessageType.HostRegister:
+			{
+				HandleHostRegister(session, payload);
+
+				break;
+			}
+
+			case MessageType.HostClaim:
+			{
+				HandleHostClaim(session, payload);
+
+				break;
+			}
+
+			case MessageType.HostPromotionAck:
+			{
+				HandleHostPromotionAck(session, payload);
+
+				break;
+			}
+
+			case MessageType.ClientJoin:
+			{
+				HandleClientJoin(session, payload);
+
+				break;
+			}
+
+			case MessageType.Data:
+			{
+				HandleData(session, payload);
+
+				break;
+			}
+
+			case MessageType.Kick:
+			{
+				HandleKick(session, payload);
+
+				break;
+			}
+
+			default:
+			{
+				Log.UnknownRelayMessageType(_logger, peer.Id, payload[0]);
+
+				break;
+			}
+		}
+	}
+
+	private void HandleNetworkError(IPEndPoint endPoint, SocketError socketError)
+	{
+		Log.LiteNetLibSocketError(_logger, endPoint, socketError);
+	}
+
+	private void HandleNetworkLatencyUpdate(NetPeer peer, int latency)
+	{
+		Log.PeerLatencyUpdated(_logger, peer.Id, latency);
+	}
+
+	private void HandleHostRegister(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadHostRegister(payload, out ushort maximumClients))
+		{
+			Log.InvalidHostRegister(_logger, session.Peer.Id);
+
+			Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+
+			return;
+		}
+
+		if (maximumClients < 1)
+		{
+			Log.InvalidHostRegisterMaximumClients(_logger, session.Peer.Id, maximumClients);
+
+			Send(session, MessageCodec.CreateError(ErrorCode.InvalidMaximumClients), DeliveryMethod.ReliableOrdered);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			if (session.Role != PeerRole.None)
+			{
+				Log.HostRegisterWhileAlreadyAssignedRole(_logger, session.Peer.Id, session.Role);
+
+				return;
+			}
+
+			string roomCode;
+
+			do
+			{
+				roomCode = RoomCode.Generate();
+			}
+			while (_roomsByCode.ContainsKey(roomCode));
+
+			Room room = new()
+			{
+				Code = roomCode,
+
+				Kind = RoomKind.EphemeralHostOwned,
+
+				Host = session,
+
+				HostToken = GenerateRandomToken(),
+
+				MaximumClients = maximumClients,
+			};
+
+			_roomsByCode.Add(roomCode, room);
+
+			session.Role = PeerRole.Host;
+
+			session.Room = room;
+
+			Log.RoomCreated(_logger, roomCode, session.Peer.Id, room.MaximumClients);
+
+			Send(session, MessageCodec.CreateRoomCreated(roomCode, room.HostToken), DeliveryMethod.ReliableOrdered);
+		}
+	}
+
+	private void HandleHostClaim(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadHostClaim(payload, out string roomCode, out string claimToken))
+		{
+			Send(session, MessageCodec.CreateError(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			if (session.Role != PeerRole.None)
+			{
+				Log.HostRegisterWhileAlreadyAssignedRole(_logger, session.Peer.Id, session.Role);
+
+				return;
+			}
+
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room))
+			{
+				Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+
+				return;
+			}
+
+			ExpirePendingHostClaimLocked(room, DateTimeOffset.UtcNow);
+
+			if (room.Kind != RoomKind.PersistentReserved || room.HasActiveHost || !room.HasPendingHostClaim || !string.Equals(room.PendingHostClaimToken, claimToken, StringComparison.OrdinalIgnoreCase))
+			{
+				Send(session, MessageCodec.CreateError(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
+
+				return;
+			}
+
+			room.ClearPendingHostClaim();
+
+			room.Host = session;
+
+			room.HostToken = GenerateRandomToken();
+
+			session.Role = PeerRole.Host;
+
+			session.Room = room;
+
+			Log.RoomCreated(_logger, room.Code, session.Peer.Id, room.MaximumClients);
+
+			Send(session, MessageCodec.CreateRoomCreated(room.Code, room.HostToken!), DeliveryMethod.ReliableOrdered);
+
+			foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+			{
+				Send(client, MessageCodec.CreateHostAvailable(), DeliveryMethod.ReliableOrdered);
+
+				Send(session, MessageCodec.CreateConnected(client.VirtualClientId), DeliveryMethod.ReliableOrdered);
+			}
+		}
+	}
+
+	private void HandleHostPromotionAck(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadHostPromotionAck(payload, out string roomCode, out string claimToken)) return;
+
+		lock (_mutex)
+		{
+			if (session.Role != PeerRole.Client || session.Room is null) return;
+
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room)) return;
+
+			ExpirePendingHostClaimLocked(room, DateTimeOffset.UtcNow);
+
+			if (room.Kind != RoomKind.PersistentReserved || !room.HasPendingHostClaim || !ReferenceEquals(room.PendingHostPromotionPeer, session) || !ReferenceEquals(session.Room, room) || !string.Equals(room.PendingHostClaimToken, claimToken, StringComparison.OrdinalIgnoreCase)) return;
+
+			room.PendingHostPromotionAckReceived = true;
+
+			DisconnectPeer(session);
+		}
+	}
+
+	private void HandleClientJoin(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadClientJoin(payload, out string roomCode))
+		{
+			Log.InvalidClientJoin(_logger, session.Peer.Id);
+
+			Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			if (session.Role != PeerRole.None)
+			{
+				Log.ClientJoinWhileAlreadyAssignedRole(_logger, session.Peer.Id, session.Role);
+
+				return;
+			}
+
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room))
+			{
+				Log.JoinMissingRoom(_logger, session.Peer.Id, roomCode);
+
+				Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+
+				return;
+			}
+
+			ExpirePendingHostClaimLocked(room, DateTimeOffset.UtcNow);
+
+			if (room.ClientsByVirtualId.Count >= room.MaximumClients)
+			{
+				Log.JoinFullRoom(_logger, session.Peer.Id, room.Code);
+
+				Send(session, MessageCodec.CreateError(ErrorCode.RoomFull), DeliveryMethod.ReliableOrdered);
+
+				return;
+			}
+
+			int virtualClientId = AddClientToRoomLocked(room, session);
+
+			Log.ClientJoinedRoom(_logger, session.Peer.Id, room.Code, virtualClientId);
+
+			if (room is { Kind: RoomKind.PersistentReserved, HasActiveHost: false })
+			{
+				if (!room.HasPendingHostClaim)
+				{
+					_ = TryPromoteNextClientToHostLocked(room);
+
+					return;
+				}
+
+				Send(session, MessageCodec.CreateJoinSuccess(), DeliveryMethod.ReliableOrdered);
+
+				Send(session, MessageCodec.CreateHostUnavailable(), DeliveryMethod.ReliableOrdered);
+
+				return;
+			}
+
+			Send(session, MessageCodec.CreateJoinSuccess(), DeliveryMethod.ReliableOrdered);
+
+			if (room.Host is not null)
+			{
+				Send(room.Host, MessageCodec.CreateConnected(virtualClientId), DeliveryMethod.ReliableOrdered);
+			}
+		}
+	}
+
+	private void HandleData(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		switch (session.Role)
+		{
+			case PeerRole.Host:
+			{
+				HandleDataFromHost(session, payload);
+
+				break;
+			}
+
+			case PeerRole.Client:
+			{
+				HandleDataFromClient(session, payload);
+
+				break;
+			}
+
+			default:
+			{
+				Log.RelayDataWithoutRoomRole(_logger, session.Peer.Id);
+
+				break;
+			}
+		}
+	}
+
+	private void HandleDataFromHost(PeerConnection hostSession, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadHostData(payload, out int targetVirtualClientId, out byte gameChannel, out byte[] gamePayload))
+		{
+			Log.InvalidHostDataPayload(_logger, hostSession.Peer.Id);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			Room? room = hostSession.Room;
+
+			if (room is null || !room.HasActiveHost || !ReferenceEquals(room.Host, hostSession))
+			{
+				Log.HostDataWithoutAssignedRoom(_logger, hostSession.Peer.Id);
+
+				return;
+			}
+
+			DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
+
+			byte[] clientPayload = MessageCodec.CreateClientData(gameChannel, gamePayload);
+
+			if (targetVirtualClientId == MessageCodec.BroadcastVirtualClientId)
+			{
+				foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+				{
+					Send(client, clientPayload, deliveryMethod);
+				}
+
+				Log.HostBroadcast(_logger, hostSession.Peer.Id, gamePayload.Length, gameChannel, room.ClientsByVirtualId.Count);
+
+				return;
+			}
+
+			if (!room.ClientsByVirtualId.TryGetValue(targetVirtualClientId, out PeerConnection? clientSession))
+			{
+				Log.HostTargetedUnknownVirtualClient(_logger, hostSession.Peer.Id, targetVirtualClientId);
+
+				return;
+			}
+
+			Send(clientSession, clientPayload, deliveryMethod);
+		}
+	}
+
+	private void HandleDataFromClient(PeerConnection clientSession, ReadOnlySpan<byte> payload)
+	{
+		if (!MessageCodec.TryReadClientData(payload, out byte gameChannel, out byte[] gamePayload))
+		{
+			Log.InvalidClientDataPayload(_logger, clientSession.Peer.Id);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			Room? room = clientSession.Room;
+
+			if (room is null || !room.HasActiveHost || room.Host is null)
+			{
+				Log.ClientDataWithoutActiveHostRoom(_logger, clientSession.Peer.Id);
+
+				return;
+			}
+
+			byte[] hostPayload = MessageCodec.CreateHostData(clientSession.VirtualClientId, gameChannel, gamePayload);
+
+			Send(room.Host, hostPayload, MapDeliveryMethod(gameChannel));
+		}
+	}
+
+	private void HandleKick(PeerConnection session, ReadOnlySpan<byte> payload)
+	{
+		if (session.Role != PeerRole.Host)
+		{
+			Log.KickWithoutHostRole(_logger, session.Peer.Id);
+
+			return;
+		}
+
+		if (!MessageCodec.TryReadKick(payload, out int virtualClientId))
+		{
+			Log.InvalidKickPayload(_logger, session.Peer.Id);
+
+			return;
+		}
+
+		lock (_mutex)
+		{
+			Room? room = session.Room;
+
+			if (room is null || !room.HasActiveHost || !ReferenceEquals(room.Host, session)) return;
+
+			if (!room.ClientsByVirtualId.Remove(virtualClientId, out PeerConnection? clientSession))
+			{
+				Log.KickUnknownVirtualClient(_logger, session.Peer.Id, virtualClientId);
+
+				return;
+			}
+
+			Log.ClientKickedByHost(_logger, session.Peer.Id, virtualClientId, clientSession.Peer.Id);
+
+			Send(clientSession, MessageCodec.CreateDisconnected(virtualClientId), DeliveryMethod.ReliableOrdered);
+
+			clientSession.Clear();
+
+			DisconnectPeer(clientSession);
+		}
+	}
+
+	private void ExpirePendingHostClaims()
+	{
+		lock (_mutex)
+		{
+			DateTimeOffset now = DateTimeOffset.UtcNow;
+
+			foreach (Room room in _roomsByCode.Values)
+			{
+				ExpirePendingHostClaimLocked(room, now);
+			}
+		}
+	}
+
+	private void ExpirePendingHostClaimLocked(Room room, DateTimeOffset now)
+	{
+		if (!room.HasPendingHostClaim || room.PendingHostClaimExpiresAtUtc > now) return;
+
+		room.ClearPendingHostClaim();
+
+		NotifyClientsHostAvailabilityLocked(room, isAvailable: false);
+
+		_ = TryPromoteNextClientToHostLocked(room);
+	}
+
+	private static int AddClientToRoomLocked(Room room, PeerConnection session)
+	{
+		int virtualClientId = room.AllocateVirtualClientId();
+
+		room.ClientsByVirtualId.Add(virtualClientId, session);
+
+		session.Role = PeerRole.Client;
+
+		session.Room = room;
+
+		session.VirtualClientId = virtualClientId;
+
+		session.RoomJoinOrder = room.AllocateJoinOrder();
+
+		return virtualClientId;
+	}
+
+	private bool TryPromoteNextClientToHostLocked(Room room)
+	{
+		if (room.Kind != RoomKind.PersistentReserved || room.HasActiveHost || room.HasPendingHostClaim) return false;
+
+		PeerConnection? candidate = null;
+
+		foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+		{
+			if (candidate is null || client.RoomJoinOrder < candidate.RoomJoinOrder) candidate = client;
+		}
+
+		if (candidate is null) return false;
+
+		room.ClientsByVirtualId.Remove(candidate.VirtualClientId);
+
+		string claimToken = GenerateRandomToken();
+
+		room.PendingHostClaimToken = claimToken;
+
+		room.PendingHostClaimExpiresAtUtc = DateTimeOffset.UtcNow.Add(HostClaimTimeout);
+
+		room.PendingHostPromotionPeer = candidate;
+
+		room.PendingHostPromotionVirtualClientId = candidate.VirtualClientId;
+
+		Send(candidate, MessageCodec.CreateHostPromoted(room.Code, room.MaximumClients, claimToken), DeliveryMethod.ReliableOrdered);
+
+		return true;
+	}
+
+	private void NotifyClientsHostAvailabilityLocked(Room room, bool isAvailable)
+	{
+		byte[] payload = isAvailable ? MessageCodec.CreateHostAvailable() : MessageCodec.CreateHostUnavailable();
+
+		foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+		{
+			Send(client, payload, DeliveryMethod.ReliableOrdered);
+		}
+	}
+
+	private void CloseRoomLocked(Room room, ErrorCode errorCode)
+	{
+		_roomsByCode.Remove(room.Code);
+
+		PeerConnection? pendingHostPromotionPeer = room.PendingHostPromotionPeer;
+
+		room.ClearPendingHostClaim();
+
+		if (pendingHostPromotionPeer is not null)
+		{
+			Send(pendingHostPromotionPeer, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+
+			pendingHostPromotionPeer.Clear();
+
+			DisconnectPeer(pendingHostPromotionPeer);
+		}
+
+		if (room.Host is not null)
+		{
+			Send(room.Host, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+
+			room.Host.Clear();
+
+			DisconnectPeer(room.Host);
+
+			room.Host = null;
+		}
+
+		foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+		{
+			Send(client, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+
+			client.Clear();
+
+			DisconnectPeer(client);
+		}
+
+		room.ClientsByVirtualId.Clear();
+	}
+
+	private static string GenerateRandomToken()
+	{
+		Span<byte> bytes = stackalloc byte[16];
+
+		RandomNumberGenerator.Fill(bytes);
+
+		return Convert.ToHexString(bytes);
+	}
+
+	private static DeliveryMethod MapDeliveryMethod(byte gameChannel)
+	{
+		return MessageCodec.IsUnreliableGameChannel(gameChannel) ? DeliveryMethod.Unreliable : DeliveryMethod.ReliableOrdered;
+	}
+
+	private static PeerConnection GetOrCreateSession(NetPeer peer)
+	{
+		if (peer.Tag is PeerConnection session) return session;
+
+		session = new PeerConnection(peer);
+
+		peer.Tag = session;
+
+		return session;
+	}
+
+	private void Send(PeerConnection session, byte[] payload, DeliveryMethod deliveryMethod)
+	{
+		try
+		{
+			session.Peer.Send(payload, MessageCodec.RelayWireChannel, deliveryMethod);
+		}
+		catch (Exception exception)
+		{
+			Log.FailedToSendRelayPayload(_logger, session.Peer.Id, deliveryMethod, exception);
+		}
+	}
+
+	private void DisconnectPeer(PeerConnection session)
+	{
+		try
+		{
+			_netManager.DisconnectPeer(session.Peer);
+		}
+		catch (Exception exception)
+		{
+			Log.FailedToDisconnectPeer(_logger, session.Peer.Id, exception);
+		}
+	}
+}

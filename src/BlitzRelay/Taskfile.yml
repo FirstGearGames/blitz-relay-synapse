@@ -1,0 +1,119 @@
+﻿version: '3'
+
+vars:
+  OUTPUT_DIRECTORY: bin/Publish
+  PROJECT: BlitzRelay.csproj
+
+tasks:
+  publish:
+    vars:
+      OS: '{{.OS | default "win"}}'
+      ARCH: '{{.ARCH | default "x64"}}'
+      MODE: '{{.MODE | default "slim"}}'
+      PUBLISH_AOT: '{{eq .MODE "native"}}'
+      PUBLISH_TRIMMED: '{{ne .MODE "slim"}}'
+      SELF_CONTAINED: '{{ne .MODE "slim"}}'
+    cmds:
+      - dotnet publish "{{.PROJECT}}" -c Release -r {{.OS}}-{{.ARCH}} -p:PublishAot={{.PUBLISH_AOT}} -p:PublishSingleFile=true -p:PublishTrimmed={{.PUBLISH_TRIMMED}} -p:SelfContained={{.SELF_CONTAINED}} -o {{.OUTPUT_DIRECTORY}}/{{.OS}}-{{.ARCH}}-{{.MODE}}
+
+  publish-win-x86-slim:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x86
+          MODE: slim
+
+  publish-win-x86-standalone:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x86
+          MODE: standalone
+
+  publish-win-x86-native:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x86
+          MODE: native
+
+  publish-win-x86:
+    cmds:
+      - task: publish-win-x86-slim
+      - task: publish-win-x86-standalone
+      - task: publish-win-x86-native
+
+  publish-win-x64-slim:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x64
+          MODE: slim
+
+  publish-win-x64-standalone:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x64
+          MODE: standalone
+
+  publish-win-x64-native:
+    cmds:
+      - task: publish
+        vars:
+          OS: win
+          ARCH: x64
+          MODE: native
+
+  publish-win-x64:
+    cmds:
+      - task: publish-win-x64-slim
+      - task: publish-win-x64-standalone
+      - task: publish-win-x64-native
+
+  publish-win:
+    cmds:
+      - task: publish-win-x86
+      - task: publish-win-x64
+
+  publish-linux-x64-slim:
+    cmds:
+      - task: publish
+        vars:
+          OS: linux
+          ARCH: x64
+          MODE: slim
+
+  publish-linux-x64-standalone:
+    cmds:
+      - task: publish
+        vars:
+          OS: linux
+          ARCH: x64
+          MODE: standalone
+
+  publish-linux-x64-native:
+    cmds:
+      - task: publish
+        vars:
+          OS: linux
+          ARCH: x64
+          MODE: native
+
+  publish-linux-x64:
+    cmds:
+      - task: publish-linux-x64-slim
+      - task: publish-linux-x64-standalone
+      - task: publish-linux-x64-native
+
+  compress:
+    cmds:
+      - cmd: PowerShell.exe -Command 'Get-ChildItem {{.OUTPUT_DIRECTORY}} -Directory | % { Compress-Archive "$($_.FullName)\*" "{{.OUTPUT_DIRECTORY}}\$($_.Name).zip" -Force }'
+        platforms: [ windows ]
+      - cmd: for dir in {{.OUTPUT_DIRECTORY}}/*/; do (cd "$dir" && zip -r "../$(basename "$dir").zip" .); done
+        platforms: [ linux ]

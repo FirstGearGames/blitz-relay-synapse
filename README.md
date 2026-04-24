@@ -108,7 +108,9 @@ additionally accept the room's host token.
   "metadataToAdd": {
     "mode": "ranked"
   },
-  "metadataToRemove": ["oldKey"]
+  "metadataToRemove": [
+    "oldKey"
+  ]
 }
 ```
 
@@ -127,6 +129,9 @@ additionally accept the room's host token.
   "metadata": {}
 }
 ```
+
+For the complete, interactive API reference, see the [OpenAPI specification](docs/relay-http-api/openapi.yaml) or
+the [Redoc documentation](docs/relay-http-api/redoc-static.html).
 
 ### Client Integration
 

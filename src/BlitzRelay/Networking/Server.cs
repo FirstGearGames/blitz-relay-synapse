@@ -222,6 +222,20 @@ internal sealed class Server : IDisposable
 		}
 	}
 
+	public bool TryKickClient(string roomCode, int virtualClientId)
+	{
+		lock (_mutex)
+		{
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room)) return false;
+
+			if (!room.ClientsByVirtualId.TryGetValue(virtualClientId, out PeerConnection? clientSession)) return false;
+
+			Log.ClientKickedByAdmin(_logger, virtualClientId, clientSession.Peer.Id, roomCode);
+
+			return TryRemoveAndDisconnectClientLocked(room, virtualClientId);
+		}
+	}
+
 	public void Dispose()
 	{
 		if (_disposed) return;
@@ -758,7 +772,7 @@ internal sealed class Server : IDisposable
 
 			if (room is null || !room.HasActiveHost || !ReferenceEquals(room.Host, session)) return;
 
-			if (!room.ClientsByVirtualId.Remove(virtualClientId, out PeerConnection? clientSession))
+			if (!room.ClientsByVirtualId.TryGetValue(virtualClientId, out PeerConnection? clientSession))
 			{
 				Log.KickUnknownVirtualClient(_logger, session.Peer.Id, virtualClientId);
 
@@ -767,12 +781,21 @@ internal sealed class Server : IDisposable
 
 			Log.ClientKickedByHost(_logger, session.Peer.Id, virtualClientId, clientSession.Peer.Id);
 
-			Send(clientSession, MessageCodec.CreateDisconnected(virtualClientId), DeliveryMethod.ReliableOrdered);
-
-			clientSession.Clear();
-
-			DisconnectPeer(clientSession);
+			_ = TryRemoveAndDisconnectClientLocked(room, virtualClientId);
 		}
+	}
+
+	private bool TryRemoveAndDisconnectClientLocked(Room room, int virtualClientId)
+	{
+		if (!room.ClientsByVirtualId.Remove(virtualClientId, out PeerConnection? clientSession)) return false;
+
+		Send(clientSession, MessageCodec.CreateDisconnected(virtualClientId), DeliveryMethod.ReliableOrdered);
+
+		clientSession.Clear();
+
+		DisconnectPeer(clientSession);
+
+		return true;
 	}
 
 	private void ExpirePendingHostClaims()

@@ -106,6 +106,9 @@ internal static partial class Log
 	[LoggerMessage(Level = LogLevel.Information, Message = "Host peer {PeerId} kicked virtual client {VirtualClientId} (peer {ClientPeerId}).")]
 	public static partial void ClientKickedByHost(ILogger logger, int peerId, int virtualClientId, int clientPeerId);
 
+	[LoggerMessage(Level = LogLevel.Information, Message = "Admin kicked virtual client {VirtualClientId} (peer {ClientPeerId}) from room {RoomCode}.")]
+	public static partial void ClientKickedByAdmin(ILogger logger, int virtualClientId, int clientPeerId, string roomCode);
+
 	[LoggerMessage(Level = LogLevel.Error, Message = "Failed to send relay payload to peer {PeerId} with delivery {DeliveryMethod}.")]
 	public static partial void FailedToSendRelayPayload(ILogger logger, int peerId, DeliveryMethod deliveryMethod, Exception exception);
 

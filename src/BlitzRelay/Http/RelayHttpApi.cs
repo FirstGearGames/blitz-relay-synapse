@@ -35,6 +35,8 @@ internal static class RelayHttpApi
 
 		app.MapPatch("/rooms/{roomCode}", (HttpContext context, string roomCode, PatchRoomRequest patchRoomRequest) => PatchRoom(context, roomCode, patchRoomRequest, relayServer, relayHostOptions.HttpAdminToken));
 
+		app.MapDelete("/rooms/{roomCode}/clients/{virtualClientId:int}", (HttpContext context, string roomCode, int virtualClientId) => KickClient(context, roomCode, virtualClientId, relayServer, relayHostOptions.HttpAdminToken));
+
 		return app;
 	}
 
@@ -116,6 +118,15 @@ internal static class RelayHttpApi
 		RoomSnapshot? snapshot = relayServer.PatchRoom(roomCode, request.DisplayName, request.MetadataToAdd, request.MetadataToRemove);
 
 		return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+	}
+
+	private static IResult KickClient(HttpContext context, string roomCode, int virtualClientId, Server relayServer, string adminToken)
+	{
+		string? bearerToken = GetBearerToken(context);
+
+		if (!IsAuthorised(bearerToken, adminToken) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
+
+		return relayServer.TryKickClient(roomCode, virtualClientId) ? Results.NoContent() : Results.NotFound();
 	}
 
 	public sealed record CreateRoomRequest

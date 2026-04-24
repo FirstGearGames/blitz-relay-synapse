@@ -1,0 +1,276 @@
+openapi: 3.1.1
+
+info:
+  title: Blitz Relay HTTP API
+  description: |
+    RESTful API for administrative room management in Blitz Relay.
+    Most endpoints require a Bearer token matching `BLITZ_RELAY_HTTP_ADMIN_TOKEN`.
+    `DELETE /rooms/{roomCode}`, `PATCH /rooms/{roomCode}`, and
+    `DELETE /rooms/{roomCode}/clients/{virtualClientId}` also accept the room's host token.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:7771
+    description: Default local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns a simple OK response. No authentication required.
+      security: [ ]
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: ""
+
+  /rooms:
+    post:
+      summary: Create a persistent room
+      description: Creates a new persistent reserved room with the specified configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoomRequest'
+      responses:
+        '200':
+          description: Room created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSnapshot'
+        '400':
+          description: Invalid request parameters
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Room already exists
+          content:
+            text/plain:
+              schema:
+                type: string
+
+    get:
+      summary: List all rooms
+      description: Returns a list of all current rooms.
+      responses:
+        '200':
+          description: List of rooms
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoomSnapshot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /rooms/{roomCode}:
+    parameters:
+      - name: roomCode
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The 8-character room code
+
+    get:
+      summary: Get room details
+      description: Returns the snapshot of a specific room.
+      responses:
+        '200':
+          description: Room found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSnapshot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Room not found
+
+    delete:
+      summary: Delete a room
+      description: Deletes a room and disconnects all participants. Accepts admin token or room host token.
+      responses:
+        '204':
+          description: Room deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Room not found
+
+    patch:
+      summary: Update a room
+      description: |
+        Updates a room's display name and/or metadata.
+        Metadata keys in `metadataToAdd` are added or overwritten.
+        Metadata keys in `metadataToRemove` are deleted.
+        Accepts admin token or room host token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchRoomRequest'
+      responses:
+        '200':
+          description: Room updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSnapshot'
+        '400':
+          description: Invalid request parameters
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Room not found
+
+  /rooms/{roomCode}/clients/{virtualClientId}:
+    parameters:
+      - name: roomCode
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The 8-character room code
+      - name: virtualClientId
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: The virtual client ID of the participant to kick
+
+    delete:
+      summary: Kick a client from a room
+      description: |
+        Removes a client from the room and disconnects them.
+        Accepts admin token or room host token.
+      responses:
+        '204':
+          description: Client kicked successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Room or client not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token matching `BLITZ_RELAY_HTTP_ADMIN_TOKEN` for most endpoints,
+        or the room's host token for room-specific management endpoints.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication token
+
+  schemas:
+    CreateRoomRequest:
+      type: object
+      properties:
+        maximumClients:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 4096
+          description: Maximum number of clients allowed in the room
+        displayName:
+          type: string
+          maxLength: 255
+          default: ""
+          description: Display name for the room (max 255 bytes UTF-8)
+        isPublic:
+          type: boolean
+          default: false
+          description: Whether the room is publicly discoverable
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: Optional key-value metadata for the room
+
+    PatchRoomRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+          nullable: true
+          description: New display name for the room (max 255 bytes UTF-8). Null to leave unchanged.
+        metadataToAdd:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: Metadata key-value pairs to add or overwrite
+        metadataToRemove:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Metadata keys to remove
+
+    RoomSnapshot:
+      type: object
+      properties:
+        code:
+          type: string
+          description: The 8-character room code
+        kind:
+          type: integer
+          description: |
+            Room kind: 0 = EphemeralHostOwned, 1 = PersistentReserved
+        isPublic:
+          type: boolean
+          description: Whether the room is publicly discoverable
+        displayName:
+          type: string
+          description: Display name of the room
+        maximumClients:
+          type: integer
+          description: Maximum number of clients allowed
+        connectedClientCount:
+          type: integer
+          description: Number of currently connected clients
+        hasHost:
+          type: boolean
+          description: Whether the room currently has an active host
+        hasPendingHostClaim:
+          type: boolean
+          description: Whether there is a pending host promotion claim
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Room metadata
+      required:
+        - code
+        - kind
+        - isPublic
+        - displayName
+        - maximumClients
+        - connectedClientCount
+        - hasHost
+        - hasPendingHostClaim
+        - metadata
+
+security:
+  - bearerAuth: [ ]

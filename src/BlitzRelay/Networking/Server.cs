@@ -194,6 +194,34 @@ internal sealed class Server : IDisposable
 		}
 	}
 
+	public RoomSnapshot? PatchRoom(string roomCode, string? displayName, IReadOnlyDictionary<string, string>? metadataToAdd, IReadOnlyList<string>? metadataToRemove)
+	{
+		lock (_mutex)
+		{
+			if (!_roomsByCode.TryGetValue(roomCode, out Room? room)) return null;
+
+			if (displayName is not null) room.DisplayName = displayName;
+
+			if (metadataToRemove is not null)
+			{
+				foreach (string key in metadataToRemove)
+				{
+					room.Metadata.Remove(key);
+				}
+			}
+
+			if (metadataToAdd is not null)
+			{
+				foreach ((string key, string value) in metadataToAdd)
+				{
+					room.Metadata[key] = value;
+				}
+			}
+
+			return RoomSnapshot.FromRoom(room);
+		}
+	}
+
 	public void Dispose()
 	{
 		if (_disposed) return;

@@ -33,6 +33,8 @@ internal static class RelayHttpApi
 
 		app.MapDelete("/rooms/{roomCode}", (HttpContext context, string roomCode) => DeleteRoom(context, roomCode, relayServer, relayHostOptions.HttpAdminToken));
 
+		app.MapPatch("/rooms/{roomCode}", (HttpContext context, string roomCode, PatchRoomRequest patchRoomRequest) => PatchRoom(context, roomCode, patchRoomRequest, relayServer, relayHostOptions.HttpAdminToken));
+
 		return app;
 	}
 
@@ -103,11 +105,31 @@ internal static class RelayHttpApi
 		return !string.IsNullOrWhiteSpace(bearerToken) && relayServer.HasRoomHostToken(roomCode, bearerToken);
 	}
 
+	private static IResult PatchRoom(HttpContext context, string roomCode, PatchRoomRequest request, Server relayServer, string adminToken)
+	{
+		string? bearerToken = GetBearerToken(context);
+
+		if (!IsAuthorised(bearerToken, adminToken) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
+
+		if (request.DisplayName is not null && Encoding.UTF8.GetByteCount(request.DisplayName) > 255) return Results.BadRequest($"{nameof(PatchRoomRequest.DisplayName)} must be at most 255 bytes when UTF-8 encoded.");
+
+		RoomSnapshot? snapshot = relayServer.PatchRoom(roomCode, request.DisplayName, request.MetadataToAdd, request.MetadataToRemove);
+
+		return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+	}
+
 	public sealed record CreateRoomRequest
 	(
 		ushort MaximumClients = 4096,
 		string DisplayName = "",
 		bool IsPublic = false,
 		Dictionary<string, string>? Metadata = null
+	);
+
+	public sealed record PatchRoomRequest
+	(
+		string? DisplayName = null,
+		Dictionary<string, string>? MetadataToAdd = null,
+		List<string>? MetadataToRemove = null
 	);
 }

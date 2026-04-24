@@ -10,7 +10,7 @@ internal sealed class Room
 
 	public bool IsPublic { get; init; }
 
-	public string DisplayName { get; init; } = string.Empty;
+	public string DisplayName { get; set; } = string.Empty;
 
 	public PeerConnection? Host { get; set; }
 

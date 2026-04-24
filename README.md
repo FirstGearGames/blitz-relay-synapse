@@ -72,16 +72,20 @@ BlitzRelay [--port <udp-port>] [--http-port <http-port>] [--log-level <level>]
 
 ### HTTP Admin API
 
-All endpoints require a `Bearer` token in the `Authorization` header, matching the `BLITZ_RELAY_HTTP_ADMIN_TOKEN`
-environment variable.
+Most endpoints require a `Bearer` token in the `Authorization` header, matching the `BLITZ_RELAY_HTTP_ADMIN_TOKEN`
+environment variable. `DELETE /rooms/{roomCode}`, `PATCH /rooms/{roomCode}`, and
+`DELETE /rooms/{roomCode}/clients/{virtualClientId}`
+additionally accept the room's host token.
 
-| Method | Endpoint            | Description                      |
-|--------|---------------------|----------------------------------|
-| GET    | `/health`           | Health check (no authentication) |
-| POST   | `/rooms`            | Create a persistent room         |
-| GET    | `/rooms`            | List all rooms                   |
-| GET    | `/rooms/{roomCode}` | Get details of a specific room   |
-| DELETE | `/rooms/{roomCode}` | Delete a room                    |
+| Method | Endpoint                                      | Description                               |
+|--------|-----------------------------------------------|-------------------------------------------|
+| GET    | `/health`                                     | Health check (no authentication)          |
+| POST   | `/rooms`                                      | Create a persistent room                  |
+| GET    | `/rooms`                                      | List all rooms                            |
+| GET    | `/rooms/{roomCode}`                           | Get details of a specific room            |
+| DELETE | `/rooms/{roomCode}`                           | Delete a room                             |
+| PATCH  | `/rooms/{roomCode}`                           | Update a room's display name and metadata |
+| DELETE | `/rooms/{roomCode}/clients/{virtualClientId}` | Kick a client from a room                 |
 
 **Create Room Request**
 
@@ -93,6 +97,18 @@ environment variable.
   "metadata": {
     "key": "value"
   }
+}
+```
+
+**Patch Room Request**
+
+```json
+{
+  "displayName": "Updated Room Name",
+  "metadataToAdd": {
+    "mode": "ranked"
+  },
+  "metadataToRemove": ["oldKey"]
 }
 ```
 

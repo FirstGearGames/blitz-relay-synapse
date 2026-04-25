@@ -17,11 +17,23 @@ internal static class RelayHttpApi
 	{
 		WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
-		builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
-
 		builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(relayHostOptions.HttpPort));
 
+		builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
+
+		builder.Services.AddCors(options =>
+		{
+			options.AddDefaultPolicy(configure =>
+			{
+				configure.AllowAnyOrigin()
+						 .AllowAnyMethod()
+						 .AllowAnyHeader();
+			});
+		});
+
 		WebApplication app = builder.Build();
+
+		app.UseCors();
 
 		app.MapGet("/health", () => Results.Ok());
 

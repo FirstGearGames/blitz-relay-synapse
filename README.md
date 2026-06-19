@@ -59,7 +59,7 @@ $env:BLITZ_RELAY_HTTP_ADMIN_TOKEN = "your-admin-token"
 Then run the server:
 
 ```bash
-BlitzRelay [--port <udp-port>] [--http-port <http-port>] [--log-level <level>]
+BlitzRelay [--port <udp-port>] [--http-port <http-port>] [--log-level <level>] [--cors <config-file>]
 ```
 
 **Command-Line Options**
@@ -69,6 +69,52 @@ BlitzRelay [--port <udp-port>] [--http-port <http-port>] [--log-level <level>]
 | `--port`      | `-p`  | 7770        | UDP port for relay traffic                                          |
 | `--http-port` |       | 7771        | HTTP port for admin API                                             |
 | `--log-level` | `-l`  | Information | Logging level (Trace, Debug, Information, Warning, Error, Critical) |
+| `--cors`      |       |             | Optional path to a JSON file describing the HTTP API CORS policy    |
+
+### CORS
+
+If you do not pass `--cors`, Blitz Relay uses a permissive CORS policy for the HTTP API:
+
+- Any origin is allowed.
+- Any HTTP method is allowed.
+- Any request header is allowed.
+- Credentials are not enabled.
+
+This default keeps setup simple for local tools, browser dashboards, and hosted admin panels. The HTTP API still
+requires
+the configured `Bearer` token for protected endpoints.
+
+If you need to restrict browser access, create a JSON file and pass it with `--cors`:
+
+```bash
+BlitzRelay --cors ./cors.json
+```
+
+Example `cors.json`:
+
+```json
+{
+  "allowedOrigins": [
+    "https://admin.example.com"
+  ],
+  "allowedMethods": [
+    "GET",
+    "POST",
+    "PATCH",
+    "DELETE"
+  ],
+  "allowedHeaders": [
+    "Authorization",
+    "Content-Type"
+  ],
+  "allowCredentials": false
+}
+```
+
+All fields are optional. If `allowedOrigins`, `allowedMethods`, or `allowedHeaders` is omitted or empty, that part of
+the
+policy defaults to allowing any value. Set `allowCredentials` to `true` only when you list specific origins; browsers do
+not allow credentials with a wildcard origin.
 
 ### HTTP Admin API
 

@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using System.Buffers;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace BlitzRelay.Http;
@@ -37,24 +39,24 @@ internal static class RelayHttpApi
 
 		app.MapGet("/health", () => Results.Ok());
 
-		app.MapPost("/rooms", (HttpContext context, CreateRoomRequest createRoomRequest) => CreateRoom(context, createRoomRequest, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapPost("/rooms", (HttpContext context, CreateRoomRequest createRoomRequest) => CreateRoom(context, createRoomRequest, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
-		app.MapGet("/rooms", (HttpContext context) => GetRooms(context, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapGet("/rooms", (HttpContext context) => GetRooms(context, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
-		app.MapGet("/rooms/{roomCode}", (HttpContext context, string roomCode) => GetRoom(context, roomCode, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapGet("/rooms/{roomCode}", (HttpContext context, string roomCode) => GetRoom(context, roomCode, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
-		app.MapDelete("/rooms/{roomCode}", (HttpContext context, string roomCode) => DeleteRoom(context, roomCode, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapDelete("/rooms/{roomCode}", (HttpContext context, string roomCode) => DeleteRoom(context, roomCode, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
-		app.MapPatch("/rooms/{roomCode}", (HttpContext context, string roomCode, PatchRoomRequest patchRoomRequest) => PatchRoom(context, roomCode, patchRoomRequest, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapPatch("/rooms/{roomCode}", (HttpContext context, string roomCode, PatchRoomRequest patchRoomRequest) => PatchRoom(context, roomCode, patchRoomRequest, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
-		app.MapDelete("/rooms/{roomCode}/clients/{virtualClientId:int}", (HttpContext context, string roomCode, int virtualClientId) => KickClient(context, roomCode, virtualClientId, relayServer, relayHostOptions.HttpAdminToken));
+		app.MapDelete("/rooms/{roomCode}/clients/{virtualClientId:int}", (HttpContext context, string roomCode, int virtualClientId) => KickClient(context, roomCode, virtualClientId, relayServer, relayHostOptions.HttpAdminTokenBytes));
 
 		return app;
 	}
 
-	private static IResult CreateRoom(HttpContext context, CreateRoomRequest request, Server relayServer, string adminToken)
+	private static IResult CreateRoom(HttpContext context, CreateRoomRequest request, Server relayServer, byte[] adminTokenBytes)
 	{
-		if (!IsAuthorised(context, adminToken)) return Results.Unauthorized();
+		if (!IsAuthorised(context, adminTokenBytes)) return Results.Unauthorized();
 
 		if (request.MaximumClients <= 0) return Results.BadRequest($"{nameof(CreateRoomRequest.MaximumClients)} must be greater than 0.");
 
@@ -72,25 +74,25 @@ internal static class RelayHttpApi
 		};
 	}
 
-	private static IResult GetRooms(HttpContext context, Server relayServer, string adminToken)
+	private static IResult GetRooms(HttpContext context, Server relayServer, byte[] adminTokenBytes)
 	{
-		return !IsAuthorised(context, adminToken) ? Results.Unauthorized() : Results.Ok(relayServer.GetRoomSnapshots());
+		return !IsAuthorised(context, adminTokenBytes) ? Results.Unauthorized() : Results.Ok(relayServer.GetRoomSnapshots());
 	}
 
-	private static IResult GetRoom(HttpContext context, string roomCode, Server relayServer, string adminToken)
+	private static IResult GetRoom(HttpContext context, string roomCode, Server relayServer, byte[] adminTokenBytes)
 	{
-		if (!IsAuthorised(context, adminToken)) return Results.Unauthorized();
+		if (!IsAuthorised(context, adminTokenBytes)) return Results.Unauthorized();
 
 		RoomSnapshot? snapshot = relayServer.GetRoomSnapshot(roomCode);
 
 		return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
 	}
 
-	private static IResult DeleteRoom(HttpContext context, string roomCode, Server relayServer, string adminToken)
+	private static IResult DeleteRoom(HttpContext context, string roomCode, Server relayServer, byte[] adminTokenBytes)
 	{
 		string? bearerToken = GetBearerToken(context);
 
-		if (!IsAuthorised(bearerToken, adminToken) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
+		if (!IsAuthorised(bearerToken, adminTokenBytes) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
 
 		return relayServer.DeleteRoom(roomCode) ? Results.NoContent() : Results.NotFound();
 	}
@@ -104,14 +106,31 @@ internal static class RelayHttpApi
 		return authorisationHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? authorisationHeader[7..] : null;
 	}
 
-	private static bool IsAuthorised(HttpContext httpContext, string adminKey)
+	private static bool IsAuthorised(HttpContext httpContext, byte[] adminTokenBytes)
 	{
-		return IsAuthorised(GetBearerToken(httpContext), adminKey);
+		return IsAuthorised(GetBearerToken(httpContext), adminTokenBytes);
 	}
 
-	private static bool IsAuthorised(string? bearerToken, string adminKey)
+	private static bool IsAuthorised(string? bearerToken, byte[] adminTokenBytes)
 	{
-		return bearerToken == adminKey;
+		if (bearerToken is null) return false;
+
+		int bearerTokenByteCount = Encoding.UTF8.GetByteCount(bearerToken);
+
+		byte[] bearerTokenBytes = ArrayPool<byte>.Shared.Rent(bearerTokenByteCount);
+
+		try
+		{
+			Encoding.UTF8.GetBytes(bearerToken, bearerTokenBytes);
+
+			return CryptographicOperations.FixedTimeEquals(bearerTokenBytes, adminTokenBytes);
+		}
+		finally
+		{
+			CryptographicOperations.ZeroMemory(bearerTokenBytes);
+
+			ArrayPool<byte>.Shared.Return(bearerTokenBytes);
+		}
 	}
 
 	private static bool HasRoomEditAccess(Server relayServer, string roomCode, string? bearerToken)
@@ -119,11 +138,11 @@ internal static class RelayHttpApi
 		return !string.IsNullOrWhiteSpace(bearerToken) && relayServer.HasRoomHostToken(roomCode, bearerToken);
 	}
 
-	private static IResult PatchRoom(HttpContext context, string roomCode, PatchRoomRequest request, Server relayServer, string adminToken)
+	private static IResult PatchRoom(HttpContext context, string roomCode, PatchRoomRequest request, Server relayServer, byte[] adminTokenBytes)
 	{
 		string? bearerToken = GetBearerToken(context);
 
-		if (!IsAuthorised(bearerToken, adminToken) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
+		if (!IsAuthorised(bearerToken, adminTokenBytes) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
 
 		if (request.DisplayName is not null && Encoding.UTF8.GetByteCount(request.DisplayName) > 255) return Results.BadRequest($"{nameof(PatchRoomRequest.DisplayName)} must be at most 255 bytes when UTF-8 encoded.");
 
@@ -132,11 +151,11 @@ internal static class RelayHttpApi
 		return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
 	}
 
-	private static IResult KickClient(HttpContext context, string roomCode, int virtualClientId, Server relayServer, string adminToken)
+	private static IResult KickClient(HttpContext context, string roomCode, int virtualClientId, Server relayServer, byte[] adminTokenBytes)
 	{
 		string? bearerToken = GetBearerToken(context);
 
-		if (!IsAuthorised(bearerToken, adminToken) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
+		if (!IsAuthorised(bearerToken, adminTokenBytes) && !HasRoomEditAccess(relayServer, roomCode, bearerToken)) return Results.Unauthorized();
 
 		return relayServer.TryKickClient(roomCode, virtualClientId) ? Results.NoContent() : Results.NotFound();
 	}

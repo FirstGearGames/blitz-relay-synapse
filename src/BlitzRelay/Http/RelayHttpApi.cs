@@ -27,9 +27,45 @@ internal static class RelayHttpApi
 		{
 			options.AddDefaultPolicy(configure =>
 			{
-				configure.AllowAnyOrigin()
-						 .AllowAnyMethod()
-						 .AllowAnyHeader();
+				CorsConfiguration? cors = relayHostOptions.Cors;
+
+				if (cors is null)
+				{
+					configure.AllowAnyOrigin()
+							 .AllowAnyMethod()
+							 .AllowAnyHeader();
+
+					return;
+				}
+
+				if (cors.AllowedOrigins is { Length: > 0 } origins)
+				{
+					configure.WithOrigins(origins);
+
+					if (cors.AllowCredentials) configure.AllowCredentials();
+				}
+				else
+				{
+					configure.AllowAnyOrigin();
+				}
+
+				if (cors.AllowedMethods is { Length: > 0 } methods)
+				{
+					configure.WithMethods(methods);
+				}
+				else
+				{
+					configure.AllowAnyMethod();
+				}
+
+				if (cors.AllowedHeaders is { Length: > 0 } headers)
+				{
+					configure.WithHeaders(headers);
+				}
+				else
+				{
+					configure.AllowAnyHeader();
+				}
 			});
 		});
 

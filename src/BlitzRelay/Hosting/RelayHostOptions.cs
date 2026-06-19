@@ -19,4 +19,6 @@ public sealed class RelayHostOptions
 	{
 		get => field ??= Encoding.UTF8.GetBytes(HttpAdminToken);
 	}
+
+	public required CorsConfiguration? Cors { get; init; }
 }

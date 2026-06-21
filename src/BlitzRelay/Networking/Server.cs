@@ -679,12 +679,22 @@ internal sealed class Server : IDisposable
 
 	private void HandleDataFromHost(PeerConnection hostSession, ReadOnlySpan<byte> payload)
 	{
-		if (!MessageCodec.TryReadHostData(payload, out int targetVirtualClientId, out byte gameChannel, out byte[] gamePayload))
+		if (payload.Length < MessageCodec.HostDataHeaderSize || payload[0] != (byte)MessageType.Data)
 		{
 			Log.InvalidHostDataPayload(_logger, hostSession.Peer.Id);
 
 			return;
 		}
+
+		MessageCodec.ReadHostData(payload, out int targetVirtualClientId, out byte gameChannel, out ReadOnlySpan<byte> gamePayload);
+
+		DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
+
+		PeerConnection? targetClient = null;
+
+		PeerConnection[]? broadcastClients = null;
+
+		int broadcastRecipientCount = 0;
 
 		lock (_mutex)
 		{
@@ -697,57 +707,80 @@ internal sealed class Server : IDisposable
 				return;
 			}
 
-			DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
-
-			byte[] clientPayload = MessageCodec.CreateClientData(gameChannel, gamePayload);
-
 			if (targetVirtualClientId == MessageCodec.BroadcastVirtualClientId)
 			{
-				foreach (PeerConnection client in room.ClientsByVirtualId.Values)
-				{
-					Send(client, clientPayload, deliveryMethod);
-				}
+				broadcastRecipientCount = room.ClientsByVirtualId.Count;
 
-				Log.HostBroadcast(_logger, hostSession.Peer.Id, gamePayload.Length, gameChannel, room.ClientsByVirtualId.Count);
+				broadcastClients = new PeerConnection[broadcastRecipientCount];
 
-				return;
+				room.ClientsByVirtualId.Values.CopyTo(broadcastClients, 0);
 			}
-
-			if (!room.ClientsByVirtualId.TryGetValue(targetVirtualClientId, out PeerConnection? clientSession))
+			else if (!room.ClientsByVirtualId.TryGetValue(targetVirtualClientId, out targetClient))
 			{
 				Log.HostTargetedUnknownVirtualClient(_logger, hostSession.Peer.Id, targetVirtualClientId);
 
 				return;
 			}
-
-			Send(clientSession, clientPayload, deliveryMethod);
 		}
+
+		if (broadcastClients is not null)
+		{
+			if (broadcastRecipientCount == 0)
+			{
+				Log.HostBroadcast(_logger, hostSession.Peer.Id, gamePayload.Length, gameChannel, broadcastRecipientCount);
+
+				return;
+			}
+
+			byte[] clientPayload = MessageCodec.CreateClientData(gameChannel, gamePayload);
+
+			foreach (PeerConnection client in broadcastClients)
+			{
+				Send(client, clientPayload, deliveryMethod);
+			}
+
+			Log.HostBroadcast(_logger, hostSession.Peer.Id, gamePayload.Length, gameChannel, broadcastRecipientCount);
+
+			return;
+		}
+
+		if (targetClient is not null) Send(targetClient, MessageCodec.CreateClientData(gameChannel, gamePayload), deliveryMethod);
 	}
 
 	private void HandleDataFromClient(PeerConnection clientSession, ReadOnlySpan<byte> payload)
 	{
-		if (!MessageCodec.TryReadClientData(payload, out byte gameChannel, out byte[] gamePayload))
+		if (payload.Length < MessageCodec.ClientDataHeaderSize || payload[0] != (byte)MessageType.Data)
 		{
 			Log.InvalidClientDataPayload(_logger, clientSession.Peer.Id);
 
 			return;
 		}
 
+		MessageCodec.ReadClientData(payload, out byte gameChannel, out ReadOnlySpan<byte> gamePayload);
+
+		DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
+
+		PeerConnection host;
+
+		int virtualClientId;
+
 		lock (_mutex)
 		{
 			Room? room = clientSession.Room;
 
-			if (room is null || !room.HasActiveHost || room.Host is null)
+			if (room is null || !room.HasActiveHost || room.Host is not { } activeHost)
 			{
 				Log.ClientDataWithoutActiveHostRoom(_logger, clientSession.Peer.Id);
 
 				return;
 			}
 
-			byte[] hostPayload = MessageCodec.CreateHostData(clientSession.VirtualClientId, gameChannel, gamePayload);
+			host = activeHost;
 
-			Send(room.Host, hostPayload, MapDeliveryMethod(gameChannel));
+			virtualClientId = clientSession.VirtualClientId;
 		}
+
+		Send(host, MessageCodec.CreateHostData(virtualClientId, gameChannel, gamePayload), deliveryMethod);
 	}
 
 	private void HandleKick(PeerConnection session, ReadOnlySpan<byte> payload)
@@ -944,7 +977,7 @@ internal sealed class Server : IDisposable
 		return session;
 	}
 
-	private void Send(PeerConnection session, byte[] payload, DeliveryMethod deliveryMethod)
+	private void Send(PeerConnection session, ReadOnlySpan<byte> payload, DeliveryMethod deliveryMethod)
 	{
 		try
 		{

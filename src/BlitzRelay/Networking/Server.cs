@@ -15,6 +15,8 @@ internal sealed class Server : IDisposable
 
 	private static readonly TimeSpan HostClaimTimeout = TimeSpan.FromSeconds(10);
 
+	private const int StackallocRelayFrameThreshold = 2048;
+
 	private readonly NetManager _netManager;
 
 	private readonly ILogger<Server> _logger;
@@ -747,20 +749,15 @@ internal sealed class Server : IDisposable
 				return;
 			}
 
-			byte[] clientPayload = MessageCodec.CreateClientData(gameChannel, gamePayload);
-
 			if (broadcastClients is null)
 			{
-				if (targetClient is not null) Send(targetClient, clientPayload, deliveryMethod);
+				if (targetClient is not null) SendClientData(targetClient, gameChannel, gamePayload, deliveryMethod);
 			}
 			else
 			{
 				try
 				{
-					for (int i = 0; i < broadcastRecipientCount; i++)
-					{
-						Send(broadcastClients[i], clientPayload, deliveryMethod);
-					}
+					SendClientData(broadcastClients.AsSpan(0, broadcastRecipientCount), gameChannel, gamePayload, deliveryMethod);
 				}
 				finally
 				{
@@ -775,7 +772,7 @@ internal sealed class Server : IDisposable
 			return;
 		}
 
-		if (targetClient is not null) Send(targetClient, MessageCodec.CreateClientData(gameChannel, gamePayload), deliveryMethod);
+		if (targetClient is not null) SendClientData(targetClient, gameChannel, gamePayload, deliveryMethod);
 	}
 
 	private void HandleDataFromClient(PeerConnection clientSession, ReadOnlySpan<byte> payload)
@@ -811,7 +808,7 @@ internal sealed class Server : IDisposable
 			virtualClientId = clientSession.VirtualClientId;
 		}
 
-		Send(host, MessageCodec.CreateHostData(virtualClientId, gameChannel, gamePayload), deliveryMethod);
+		SendHostData(host, virtualClientId, gameChannel, gamePayload, deliveryMethod);
 	}
 
 	private void HandleKick(PeerConnection session, ReadOnlySpan<byte> payload)
@@ -1006,6 +1003,107 @@ internal sealed class Server : IDisposable
 		peer.Tag = session;
 
 		return session;
+	}
+
+	private void SendClientData(PeerConnection client, byte gameChannel, ReadOnlySpan<byte> gamePayload, DeliveryMethod deliveryMethod)
+	{
+		int payloadLength = MessageCodec.ClientDataHeaderSize + gamePayload.Length;
+
+		if (payloadLength <= StackallocRelayFrameThreshold)
+		{
+			Span<byte> payload = stackalloc byte[payloadLength];
+
+			MessageCodec.WriteClientData(payload, gameChannel, gamePayload);
+
+			Send(client, payload, deliveryMethod);
+
+			return;
+		}
+
+		byte[] rentedPayload = ArrayPool<byte>.Shared.Rent(payloadLength);
+
+		try
+		{
+			Span<byte> payload = rentedPayload.AsSpan(0, payloadLength);
+
+			MessageCodec.WriteClientData(payload, gameChannel, gamePayload);
+
+			Send(client, payload, deliveryMethod);
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(rentedPayload);
+		}
+	}
+
+	private void SendClientData(ReadOnlySpan<PeerConnection> clients, byte gameChannel, ReadOnlySpan<byte> gamePayload, DeliveryMethod deliveryMethod)
+	{
+		if (clients.Length == 0) return;
+
+		int payloadLength = MessageCodec.ClientDataHeaderSize + gamePayload.Length;
+
+		if (payloadLength <= StackallocRelayFrameThreshold)
+		{
+			Span<byte> payload = stackalloc byte[payloadLength];
+
+			MessageCodec.WriteClientData(payload, gameChannel, gamePayload);
+
+			foreach (PeerConnection client in clients)
+			{
+				Send(client, payload, deliveryMethod);
+			}
+
+			return;
+		}
+
+		byte[] rentedPayload = ArrayPool<byte>.Shared.Rent(payloadLength);
+
+		try
+		{
+			Span<byte> payload = rentedPayload.AsSpan(0, payloadLength);
+
+			MessageCodec.WriteClientData(payload, gameChannel, gamePayload);
+
+			foreach (PeerConnection client in clients)
+			{
+				Send(client, payload, deliveryMethod);
+			}
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(rentedPayload);
+		}
+	}
+
+	private void SendHostData(PeerConnection host, int virtualClientId, byte gameChannel, ReadOnlySpan<byte> gamePayload, DeliveryMethod deliveryMethod)
+	{
+		int payloadLength = MessageCodec.HostDataHeaderSize + gamePayload.Length;
+
+		if (payloadLength <= StackallocRelayFrameThreshold)
+		{
+			Span<byte> payload = stackalloc byte[payloadLength];
+
+			MessageCodec.WriteHostData(payload, virtualClientId, gameChannel, gamePayload);
+
+			Send(host, payload, deliveryMethod);
+
+			return;
+		}
+
+		byte[] rentedPayload = ArrayPool<byte>.Shared.Rent(payloadLength);
+
+		try
+		{
+			Span<byte> payload = rentedPayload.AsSpan(0, payloadLength);
+
+			MessageCodec.WriteHostData(payload, virtualClientId, gameChannel, gamePayload);
+
+			Send(host, payload, deliveryMethod);
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(rentedPayload);
+		}
 	}
 
 	private void Send(PeerConnection session, ReadOnlySpan<byte> payload, DeliveryMethod deliveryMethod)

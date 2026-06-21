@@ -2,6 +2,7 @@ using BlitzRelay.Protocol;
 using BlitzRelay.Rooms;
 using LiteNetLib;
 using Microsoft.Extensions.Logging;
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -371,7 +372,7 @@ internal sealed class Server : IDisposable
 	{
 		PeerConnection session = GetOrCreateSession(peer);
 
-		byte[] payload = reader.GetRemainingBytes();
+		ReadOnlySpan<byte> payload = reader.GetRemainingBytesSpan();
 
 		Log.RelayPayloadReceived(_logger, peer.Id, payload.Length, channelNumber, deliveryMethod);
 
@@ -690,6 +691,8 @@ internal sealed class Server : IDisposable
 
 		DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
 
+		bool isBroadcast = targetVirtualClientId == MessageCodec.BroadcastVirtualClientId;
+
 		PeerConnection? targetClient = null;
 
 		PeerConnection[]? broadcastClients = null;
@@ -707,13 +710,25 @@ internal sealed class Server : IDisposable
 				return;
 			}
 
-			if (targetVirtualClientId == MessageCodec.BroadcastVirtualClientId)
+			if (isBroadcast)
 			{
 				broadcastRecipientCount = room.ClientsByVirtualId.Count;
 
-				broadcastClients = new PeerConnection[broadcastRecipientCount];
+				if (broadcastRecipientCount == 1)
+				{
+					foreach (PeerConnection client in room.ClientsByVirtualId.Values)
+					{
+						targetClient = client;
 
-				room.ClientsByVirtualId.Values.CopyTo(broadcastClients, 0);
+						break;
+					}
+				}
+				else if (broadcastRecipientCount > 1)
+				{
+					broadcastClients = ArrayPool<PeerConnection>.Shared.Rent(broadcastRecipientCount);
+
+					room.ClientsByVirtualId.Values.CopyTo(broadcastClients, 0);
+				}
 			}
 			else if (!room.ClientsByVirtualId.TryGetValue(targetVirtualClientId, out targetClient))
 			{
@@ -723,7 +738,7 @@ internal sealed class Server : IDisposable
 			}
 		}
 
-		if (broadcastClients is not null)
+		if (isBroadcast)
 		{
 			if (broadcastRecipientCount == 0)
 			{
@@ -734,9 +749,25 @@ internal sealed class Server : IDisposable
 
 			byte[] clientPayload = MessageCodec.CreateClientData(gameChannel, gamePayload);
 
-			foreach (PeerConnection client in broadcastClients)
+			if (broadcastClients is null)
 			{
-				Send(client, clientPayload, deliveryMethod);
+				if (targetClient is not null) Send(targetClient, clientPayload, deliveryMethod);
+			}
+			else
+			{
+				try
+				{
+					for (int i = 0; i < broadcastRecipientCount; i++)
+					{
+						Send(broadcastClients[i], clientPayload, deliveryMethod);
+					}
+				}
+				finally
+				{
+					Array.Clear(broadcastClients, 0, broadcastRecipientCount);
+
+					ArrayPool<PeerConnection>.Shared.Return(broadcastClients);
+				}
 			}
 
 			Log.HostBroadcast(_logger, hostSession.Peer.Id, gamePayload.Length, gameChannel, broadcastRecipientCount);

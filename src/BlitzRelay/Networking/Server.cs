@@ -19,6 +19,8 @@ internal sealed class Server : IDisposable
 
 	private const int ReliableQueuePacketsBeforeDroppingUnreliable = 256;
 
+	private const int ReliableQueuePacketsBeforeDisconnect = 2048;
+
 	private readonly NetManager _netManager;
 
 	private readonly ILogger<Server> _logger;
@@ -1013,6 +1015,8 @@ internal sealed class Server : IDisposable
 
 		if (ShouldDropUnreliableRelayPayload(client, payloadLength, deliveryMethod)) return;
 
+		if (ShouldDisconnectRecipientForReliableBacklog(client, payloadLength, deliveryMethod)) return;
+
 		if (payloadLength <= StackallocRelayFrameThreshold)
 		{
 			Span<byte> payload = stackalloc byte[payloadLength];
@@ -1046,7 +1050,7 @@ internal sealed class Server : IDisposable
 
 		int payloadLength = MessageCodec.ClientDataHeaderSize + gamePayload.Length;
 
-		int clientCount = FilterUnreliableRelayRecipients(clients, payloadLength, deliveryMethod);
+		int clientCount = FilterRelayRecipients(clients, payloadLength, deliveryMethod);
 
 		if (clientCount == 0) return;
 
@@ -1089,6 +1093,8 @@ internal sealed class Server : IDisposable
 
 		if (ShouldDropUnreliableRelayPayload(host, payloadLength, deliveryMethod)) return;
 
+		if (ShouldDisconnectRecipientForReliableBacklog(host, payloadLength, deliveryMethod)) return;
+
 		if (payloadLength <= StackallocRelayFrameThreshold)
 		{
 			Span<byte> payload = stackalloc byte[payloadLength];
@@ -1116,10 +1122,8 @@ internal sealed class Server : IDisposable
 		}
 	}
 
-	private int FilterUnreliableRelayRecipients(Span<PeerConnection> recipients, int payloadLength, DeliveryMethod deliveryMethod)
+	private int FilterRelayRecipients(Span<PeerConnection> recipients, int payloadLength, DeliveryMethod deliveryMethod)
 	{
-		if (deliveryMethod != DeliveryMethod.Unreliable) return recipients.Length;
-
 		int writeIndex = 0;
 
 		for (int readIndex = 0; readIndex < recipients.Length; readIndex++)
@@ -1127,6 +1131,8 @@ internal sealed class Server : IDisposable
 			PeerConnection recipient = recipients[readIndex];
 
 			if (ShouldDropUnreliableRelayPayload(recipient, payloadLength, deliveryMethod)) continue;
+
+			if (ShouldDisconnectRecipientForReliableBacklog(recipient, payloadLength, deliveryMethod)) continue;
 
 			recipients[writeIndex++] = recipient;
 		}
@@ -1150,6 +1156,21 @@ internal sealed class Server : IDisposable
 		if (reliableQueuePackets < ReliableQueuePacketsBeforeDroppingUnreliable) return false;
 
 		Log.UnreliableRelayPayloadDroppedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, ReliableQueuePacketsBeforeDroppingUnreliable);
+
+		return true;
+	}
+
+	private bool ShouldDisconnectRecipientForReliableBacklog(PeerConnection recipient, int payloadLength, DeliveryMethod deliveryMethod)
+	{
+		if (deliveryMethod != DeliveryMethod.ReliableOrdered) return false;
+
+		int reliableQueuePackets = recipient.Peer.GetPacketsCountInReliableQueue(MessageCodec.RelayWireChannel, true);
+
+		if (reliableQueuePackets < ReliableQueuePacketsBeforeDisconnect) return false;
+
+		Log.ReliableRelayRecipientDisconnectedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, ReliableQueuePacketsBeforeDisconnect);
+
+		DisconnectPeer(recipient);
 
 		return true;
 	}

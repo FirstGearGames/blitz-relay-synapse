@@ -118,6 +118,9 @@ internal static partial class Log
 	[LoggerMessage(Level = LogLevel.Debug, Message = "Dropped unreliable relay payload to peer {PeerId} because reliable queue is backed up: bytes={PayloadLength}, reliableQueuePackets={ReliableQueuePackets}, threshold={Threshold}.")]
 	public static partial void UnreliableRelayPayloadDroppedDueToBackpressure(ILogger logger, int peerId, int payloadLength, int reliableQueuePackets, int threshold);
 
+	[LoggerMessage(Level = LogLevel.Warning, Message = "Disconnecting peer {PeerId} because reliable relay queue is backed up: bytes={PayloadLength}, reliableQueuePackets={ReliableQueuePackets}, threshold={Threshold}.")]
+	public static partial void ReliableRelayRecipientDisconnectedDueToBackpressure(ILogger logger, int peerId, int payloadLength, int reliableQueuePackets, int threshold);
+
 	[LoggerMessage(Level = LogLevel.Warning, Message = "LiteNetLib rejected relay payload to peer {PeerId}: bytes={PayloadLength}, delivery={DeliveryMethod}.")]
 	public static partial void RelayPayloadRejectedAsTooLarge(ILogger logger, int peerId, int payloadLength, DeliveryMethod deliveryMethod, Exception exception);
 

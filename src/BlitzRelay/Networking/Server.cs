@@ -17,10 +17,6 @@ internal sealed class Server : IDisposable
 
 	private const int StackallocRelayFrameThreshold = 2048;
 
-	private const int ReliableQueuePacketsBeforeDroppingUnreliable = 256;
-
-	private const int ReliableQueuePacketsBeforeDisconnect = 2048;
-
 	private readonly NetManager _netManager;
 
 	private readonly ILogger<Server> _logger;
@@ -1011,7 +1007,7 @@ internal sealed class Server : IDisposable
 
 	private void SendClientData(PeerConnection client, byte gameChannel, ReadOnlySpan<byte> gamePayload, DeliveryMethod deliveryMethod)
 	{
-		int payloadLength = MessageCodec.ClientDataHeaderSize + gamePayload.Length;
+		int payloadLength = RelayBackpressurePolicy.ClientRelayPayloadLength(gamePayload.Length);
 
 		if (ShouldDropUnreliableRelayPayload(client, payloadLength, deliveryMethod)) return;
 
@@ -1048,7 +1044,7 @@ internal sealed class Server : IDisposable
 	{
 		if (clients.Length == 0) return;
 
-		int payloadLength = MessageCodec.ClientDataHeaderSize + gamePayload.Length;
+		int payloadLength = RelayBackpressurePolicy.ClientRelayPayloadLength(gamePayload.Length);
 
 		int clientCount = FilterRelayRecipients(clients, payloadLength, deliveryMethod);
 
@@ -1089,7 +1085,7 @@ internal sealed class Server : IDisposable
 
 	private void SendHostData(PeerConnection host, int virtualClientId, byte gameChannel, ReadOnlySpan<byte> gamePayload, DeliveryMethod deliveryMethod)
 	{
-		int payloadLength = MessageCodec.HostDataHeaderSize + gamePayload.Length;
+		int payloadLength = RelayBackpressurePolicy.HostRelayPayloadLength(gamePayload.Length);
 
 		if (ShouldDropUnreliableRelayPayload(host, payloadLength, deliveryMethod)) return;
 
@@ -1144,7 +1140,7 @@ internal sealed class Server : IDisposable
 	{
 		if (deliveryMethod != DeliveryMethod.Unreliable) return false;
 
-		if (payloadLength > NetConstants.MaxUnreliableDataSize)
+		if (RelayBackpressurePolicy.IsOversizedUnreliableRelayPayload(payloadLength, deliveryMethod))
 		{
 			Log.OversizedUnreliableRelayPayloadDropped(_logger, recipient.Peer.Id, payloadLength, NetConstants.MaxUnreliableDataSize);
 
@@ -1153,9 +1149,9 @@ internal sealed class Server : IDisposable
 
 		int reliableQueuePackets = recipient.Peer.GetPacketsCountInReliableQueue(MessageCodec.RelayWireChannel, true);
 
-		if (reliableQueuePackets < ReliableQueuePacketsBeforeDroppingUnreliable) return false;
+		if (!RelayBackpressurePolicy.ShouldDropUnreliableForReliableBackpressure(reliableQueuePackets, deliveryMethod)) return false;
 
-		Log.UnreliableRelayPayloadDroppedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, ReliableQueuePacketsBeforeDroppingUnreliable);
+		Log.UnreliableRelayPayloadDroppedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, RelayBackpressurePolicy.ReliableQueuePacketsBeforeDroppingUnreliable);
 
 		return true;
 	}
@@ -1166,9 +1162,9 @@ internal sealed class Server : IDisposable
 
 		int reliableQueuePackets = recipient.Peer.GetPacketsCountInReliableQueue(MessageCodec.RelayWireChannel, true);
 
-		if (reliableQueuePackets < ReliableQueuePacketsBeforeDisconnect) return false;
+		if (!RelayBackpressurePolicy.ShouldDisconnectReliableForBackpressure(reliableQueuePackets, deliveryMethod)) return false;
 
-		Log.ReliableRelayRecipientDisconnectedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, ReliableQueuePacketsBeforeDisconnect);
+		Log.ReliableRelayRecipientDisconnectedDueToBackpressure(_logger, recipient.Peer.Id, payloadLength, reliableQueuePackets, RelayBackpressurePolicy.ReliableQueuePacketsBeforeDisconnect);
 
 		DisconnectPeer(recipient);
 

@@ -9,11 +9,6 @@ internal static class RelayBackpressurePolicy
 
 	public const int ReliableQueuePacketsBeforeDisconnect = 2048;
 
-	public static bool IsOversizedUnreliableRelayPayload(int payloadLength, DeliveryMethod deliveryMethod)
-	{
-		return deliveryMethod == DeliveryMethod.Unreliable && payloadLength > NetConstants.MaxUnreliableDataSize;
-	}
-
 	public static bool ShouldDropUnreliableForReliableBackpressure(int reliableQueuePackets, DeliveryMethod deliveryMethod)
 	{
 		return deliveryMethod == DeliveryMethod.Unreliable && reliableQueuePackets >= ReliableQueuePacketsBeforeDroppingUnreliable;

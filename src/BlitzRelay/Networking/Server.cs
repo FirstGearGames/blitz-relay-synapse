@@ -1013,6 +1013,17 @@ internal sealed class Server : IDisposable
 
 		if (ShouldDisconnectRecipientForReliableBacklog(client, payloadLength, deliveryMethod)) return;
 
+		if (payloadLength <= client.Peer.GetMaxSinglePacketSize(deliveryMethod))
+		{
+			PooledPacket pooledPacket = client.Peer.CreatePacketFromPool(deliveryMethod, MessageCodec.RelayWireChannel);
+
+			int written = MessageCodec.WriteClientData(pooledPacket.Data.AsSpan(pooledPacket.UserDataOffset, payloadLength), gameChannel, gamePayload);
+
+			client.Peer.SendPooledPacket(pooledPacket, written);
+
+			return;
+		}
+
 		if (payloadLength <= StackallocRelayFrameThreshold)
 		{
 			Span<byte> payload = stackalloc byte[payloadLength];
@@ -1049,6 +1060,31 @@ internal sealed class Server : IDisposable
 		int clientCount = FilterRelayRecipients(clients, payloadLength, deliveryMethod);
 
 		if (clientCount == 0) return;
+
+		bool allRecipientsCanSendSinglePacket = true;
+
+		for (int i = 0; i < clientCount; i++)
+		{
+			if (payloadLength <= clients[i].Peer.GetMaxSinglePacketSize(deliveryMethod)) continue;
+
+			allRecipientsCanSendSinglePacket = false;
+
+			break;
+		}
+
+		if (allRecipientsCanSendSinglePacket)
+		{
+			for (int i = 0; i < clientCount; i++)
+			{
+				PooledPacket pooledPacket = clients[i].Peer.CreatePacketFromPool(deliveryMethod, MessageCodec.RelayWireChannel);
+
+				int written = MessageCodec.WriteClientData(pooledPacket.Data.AsSpan(pooledPacket.UserDataOffset, payloadLength), gameChannel, gamePayload);
+
+				clients[i].Peer.SendPooledPacket(pooledPacket, written);
+			}
+
+			return;
+		}
 
 		if (payloadLength <= StackallocRelayFrameThreshold)
 		{
@@ -1090,6 +1126,17 @@ internal sealed class Server : IDisposable
 		if (ShouldDropUnreliableRelayPayload(host, payloadLength, deliveryMethod)) return;
 
 		if (ShouldDisconnectRecipientForReliableBacklog(host, payloadLength, deliveryMethod)) return;
+
+		if (payloadLength <= host.Peer.GetMaxSinglePacketSize(deliveryMethod))
+		{
+			PooledPacket pooledPacket = host.Peer.CreatePacketFromPool(deliveryMethod, MessageCodec.RelayWireChannel);
+
+			int written = MessageCodec.WriteHostData(pooledPacket.Data.AsSpan(pooledPacket.UserDataOffset, payloadLength), virtualClientId, gameChannel, gamePayload);
+
+			host.Peer.SendPooledPacket(pooledPacket, written);
+
+			return;
+		}
 
 		if (payloadLength <= StackallocRelayFrameThreshold)
 		{
@@ -1140,9 +1187,11 @@ internal sealed class Server : IDisposable
 	{
 		if (deliveryMethod != DeliveryMethod.Unreliable) return false;
 
-		if (RelayBackpressurePolicy.IsOversizedUnreliableRelayPayload(payloadLength, deliveryMethod))
+		int maxUnreliablePayloadLength = Math.Min(NetConstants.MaxUnreliableDataSize, recipient.Peer.GetMaxSinglePacketSize(deliveryMethod));
+
+		if (payloadLength > maxUnreliablePayloadLength)
 		{
-			Log.OversizedUnreliableRelayPayloadDropped(_logger, recipient.Peer.Id, payloadLength, NetConstants.MaxUnreliableDataSize);
+			Log.OversizedUnreliableRelayPayloadDropped(_logger, recipient.Peer.Id, payloadLength, maxUnreliablePayloadLength);
 
 			return true;
 		}

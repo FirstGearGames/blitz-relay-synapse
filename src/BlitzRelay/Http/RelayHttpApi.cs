@@ -159,7 +159,7 @@ internal static class RelayHttpApi
 		{
 			Encoding.UTF8.GetBytes(bearerToken, bearerTokenBytes);
 
-			return CryptographicOperations.FixedTimeEquals(bearerTokenBytes, adminTokenBytes);
+			return CryptographicOperations.FixedTimeEquals(bearerTokenBytes.AsSpan(0, bearerTokenByteCount), adminTokenBytes);
 		}
 		finally
 		{

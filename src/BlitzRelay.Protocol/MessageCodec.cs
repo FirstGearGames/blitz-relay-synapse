@@ -17,6 +17,26 @@ public static class MessageCodec
 	private const int ErrorHeaderSize = 2;
 	private const int VirtualClientIdSize = 4;
 
+	private static readonly byte[] JoinSuccessMessage = [(byte)MessageType.JoinSuccess];
+
+	private static readonly byte[] HostUnavailableMessage = [(byte)MessageType.HostUnavailable];
+
+	private static readonly byte[] HostAvailableMessage = [(byte)MessageType.HostAvailable];
+
+	private static readonly byte[] RoomNotFoundErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.RoomNotFound];
+
+	private static readonly byte[] RoomFullErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.RoomFull];
+
+	private static readonly byte[] RoomExistsErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.RoomExists];
+
+	private static readonly byte[] InvalidHostClaimErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.InvalidHostClaim];
+
+	private static readonly byte[] RoomClosedErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.RoomClosed];
+
+	private static readonly byte[] InvalidMaximumClientsErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.InvalidMaximumClients];
+
+	private static readonly byte[] UnknownErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.Unknown];
+
 	public const int HostDataHeaderSize = 6;
 
 	public const int ClientDataHeaderSize = 2;
@@ -523,6 +543,11 @@ public static class MessageCodec
 		return payload;
 	}
 
+	internal static ReadOnlySpan<byte> GetJoinSuccessMessage()
+	{
+		return JoinSuccessMessage;
+	}
+
 	public static bool TryReadJoinSuccess(ReadOnlySpan<byte> payload)
 	{
 		return payload.Length == 1 && payload[0] == (byte)MessageType.JoinSuccess;
@@ -603,6 +628,11 @@ public static class MessageCodec
 		return CreateEmptyMessage(MessageType.HostUnavailable);
 	}
 
+	internal static ReadOnlySpan<byte> GetHostUnavailableMessage()
+	{
+		return HostUnavailableMessage;
+	}
+
 	public static bool TryReadHostUnavailable(ReadOnlySpan<byte> payload)
 	{
 		return TryReadEmptyMessage(payload, MessageType.HostUnavailable);
@@ -621,6 +651,11 @@ public static class MessageCodec
 	public static byte[] CreateHostAvailable()
 	{
 		return CreateEmptyMessage(MessageType.HostAvailable);
+	}
+
+	internal static ReadOnlySpan<byte> GetHostAvailableMessage()
+	{
+		return HostAvailableMessage;
 	}
 
 	public static bool TryReadHostAvailable(ReadOnlySpan<byte> payload)
@@ -649,6 +684,30 @@ public static class MessageCodec
 		byte[] payload = new byte[ErrorHeaderSize];
 
 		WriteError(payload, errorCode);
+
+		return payload;
+	}
+
+	internal static ReadOnlySpan<byte> GetErrorMessage(ErrorCode errorCode)
+	{
+		byte[] payload = errorCode switch
+		{
+			ErrorCode.RoomNotFound => RoomNotFoundErrorMessage,
+
+			ErrorCode.RoomFull => RoomFullErrorMessage,
+
+			ErrorCode.RoomExists => RoomExistsErrorMessage,
+
+			ErrorCode.InvalidHostClaim => InvalidHostClaimErrorMessage,
+
+			ErrorCode.RoomClosed => RoomClosedErrorMessage,
+
+			ErrorCode.InvalidMaximumClients => InvalidMaximumClientsErrorMessage,
+
+			ErrorCode.Unknown => UnknownErrorMessage,
+
+			_ => CreateError(errorCode),
+		};
 
 		return payload;
 	}

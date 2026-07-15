@@ -449,7 +449,7 @@ internal sealed class Server : IDisposable
 		{
 			Log.InvalidHostRegister(_logger, session.Peer.Id);
 
-			Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+			Send(session, MessageCodec.GetErrorMessage(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
 
 			return;
 		}
@@ -458,7 +458,7 @@ internal sealed class Server : IDisposable
 		{
 			Log.InvalidHostRegisterMaximumClients(_logger, session.Peer.Id, maximumClients);
 
-			Send(session, MessageCodec.CreateError(ErrorCode.InvalidMaximumClients), DeliveryMethod.ReliableOrdered);
+			Send(session, MessageCodec.GetErrorMessage(ErrorCode.InvalidMaximumClients), DeliveryMethod.ReliableOrdered);
 
 			return;
 		}
@@ -509,7 +509,7 @@ internal sealed class Server : IDisposable
 	{
 		if (!MessageCodec.TryReadHostClaim(payload, out string roomCode, out string claimToken))
 		{
-			Send(session, MessageCodec.CreateError(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
+			Send(session, MessageCodec.GetErrorMessage(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
 
 			return;
 		}
@@ -525,7 +525,7 @@ internal sealed class Server : IDisposable
 
 			if (!_roomsByCode.TryGetValue(roomCode, out Room? room))
 			{
-				Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetErrorMessage(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
 
 				return;
 			}
@@ -534,7 +534,7 @@ internal sealed class Server : IDisposable
 
 			if (room.Kind != RoomKind.PersistentReserved || room.HasActiveHost || !room.HasPendingHostClaim || !string.Equals(room.PendingHostClaimToken, claimToken, StringComparison.OrdinalIgnoreCase))
 			{
-				Send(session, MessageCodec.CreateError(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetErrorMessage(ErrorCode.InvalidHostClaim), DeliveryMethod.ReliableOrdered);
 
 				return;
 			}
@@ -555,7 +555,7 @@ internal sealed class Server : IDisposable
 
 			foreach (PeerConnection client in room.ClientsByVirtualId.Values)
 			{
-				Send(client, MessageCodec.CreateHostAvailable(), DeliveryMethod.ReliableOrdered);
+				Send(client, MessageCodec.GetHostAvailableMessage(), DeliveryMethod.ReliableOrdered);
 
 				Send(session, MessageCodec.CreateConnected(client.VirtualClientId), DeliveryMethod.ReliableOrdered);
 			}
@@ -588,7 +588,7 @@ internal sealed class Server : IDisposable
 		{
 			Log.InvalidClientJoin(_logger, session.Peer.Id);
 
-			Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+			Send(session, MessageCodec.GetErrorMessage(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
 
 			return;
 		}
@@ -606,7 +606,7 @@ internal sealed class Server : IDisposable
 			{
 				Log.JoinMissingRoom(_logger, session.Peer.Id, roomCode);
 
-				Send(session, MessageCodec.CreateError(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetErrorMessage(ErrorCode.RoomNotFound), DeliveryMethod.ReliableOrdered);
 
 				return;
 			}
@@ -617,7 +617,7 @@ internal sealed class Server : IDisposable
 			{
 				Log.JoinFullRoom(_logger, session.Peer.Id, room.Code);
 
-				Send(session, MessageCodec.CreateError(ErrorCode.RoomFull), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetErrorMessage(ErrorCode.RoomFull), DeliveryMethod.ReliableOrdered);
 
 				return;
 			}
@@ -635,14 +635,14 @@ internal sealed class Server : IDisposable
 					return;
 				}
 
-				Send(session, MessageCodec.CreateJoinSuccess(), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetJoinSuccessMessage(), DeliveryMethod.ReliableOrdered);
 
-				Send(session, MessageCodec.CreateHostUnavailable(), DeliveryMethod.ReliableOrdered);
+				Send(session, MessageCodec.GetHostUnavailableMessage(), DeliveryMethod.ReliableOrdered);
 
 				return;
 			}
 
-			Send(session, MessageCodec.CreateJoinSuccess(), DeliveryMethod.ReliableOrdered);
+			Send(session, MessageCodec.GetJoinSuccessMessage(), DeliveryMethod.ReliableOrdered);
 
 			if (room.Host is not null)
 			{
@@ -939,7 +939,7 @@ internal sealed class Server : IDisposable
 
 	private void NotifyClientsHostAvailabilityLocked(Room room, bool isAvailable)
 	{
-		byte[] payload = isAvailable ? MessageCodec.CreateHostAvailable() : MessageCodec.CreateHostUnavailable();
+		ReadOnlySpan<byte> payload = isAvailable ? MessageCodec.GetHostAvailableMessage() : MessageCodec.GetHostUnavailableMessage();
 
 		foreach (PeerConnection client in room.ClientsByVirtualId.Values)
 		{
@@ -957,7 +957,7 @@ internal sealed class Server : IDisposable
 
 		if (pendingHostPromotionPeer is not null)
 		{
-			Send(pendingHostPromotionPeer, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+			Send(pendingHostPromotionPeer, MessageCodec.GetErrorMessage(errorCode), DeliveryMethod.ReliableOrdered);
 
 			pendingHostPromotionPeer.Clear();
 
@@ -966,7 +966,7 @@ internal sealed class Server : IDisposable
 
 		if (room.Host is not null)
 		{
-			Send(room.Host, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+			Send(room.Host, MessageCodec.GetErrorMessage(errorCode), DeliveryMethod.ReliableOrdered);
 
 			room.Host.Clear();
 
@@ -977,7 +977,7 @@ internal sealed class Server : IDisposable
 
 		foreach (PeerConnection client in room.ClientsByVirtualId.Values)
 		{
-			Send(client, MessageCodec.CreateError(errorCode), DeliveryMethod.ReliableOrdered);
+			Send(client, MessageCodec.GetErrorMessage(errorCode), DeliveryMethod.ReliableOrdered);
 
 			client.Clear();
 

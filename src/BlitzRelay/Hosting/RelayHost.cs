@@ -12,7 +12,6 @@ internal sealed class RelayHost
 	Func<ILoggerFactory> createLoggerFactory,
 	ICancellationSignal cancellationSignal
 )
-	: IRelayHost
 {
 	public async Task<int> RunAsync(RelayHostOptions relayHostOptions, CancellationToken cancellationToken)
 	{

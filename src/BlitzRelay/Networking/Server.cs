@@ -273,9 +273,7 @@ internal sealed class Server : IDisposable
 	{
 		lock (_mutex)
 		{
-			PeerConnection session = peer.Tag as PeerConnection ?? new PeerConnection(peer);
-
-			peer.Tag = session;
+			PeerConnection session = GetOrCreateSession(peer);
 
 			Log.PeerDisconnected(_logger, peer.Id, session.Endpoint, session.Role, disconnectInfo.Reason);
 
@@ -1005,9 +1003,7 @@ internal sealed class Server : IDisposable
 
 	private static PeerConnection GetOrCreateSession(NetPeer peer)
 	{
-		if (peer.Tag is PeerConnection session) return session;
-
-		session = new PeerConnection(peer);
+		PeerConnection session = peer.Tag as PeerConnection ?? new PeerConnection(peer);
 
 		peer.Tag = session;
 

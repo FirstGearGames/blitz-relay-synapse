@@ -107,7 +107,7 @@ public static class MessageCodec
 
 		if (payload.Length < ClientJoinHeaderSize + roomCodeLength) return false;
 
-		roomCode = ReadClientJoin(payload);
+		roomCode = ReadString(payload, ClientJoinHeaderSize, roomCodeLength);
 
 		return true;
 	}
@@ -155,7 +155,9 @@ public static class MessageCodec
 
 		if (payload.Length < HostClaimHeaderSize + roomCodeLength + claimTokenLength) return false;
 
-		ReadHostClaim(payload, out roomCode, out claimToken);
+		roomCode = ReadString(payload, HostClaimHeaderSize, roomCodeLength);
+
+		claimToken = ReadString(payload, HostClaimHeaderSize + roomCodeLength, claimTokenLength);
 
 		return true;
 	}
@@ -207,7 +209,9 @@ public static class MessageCodec
 
 		if (payload.Length < HostPromotionAckHeaderSize + roomCodeLength + claimTokenLength) return false;
 
-		ReadHostPromotionAck(payload, out roomCode, out claimToken);
+		roomCode = ReadString(payload, HostPromotionAckHeaderSize, roomCodeLength);
+
+		claimToken = ReadString(payload, HostPromotionAckHeaderSize + roomCodeLength, claimTokenLength);
 
 		return true;
 	}
@@ -284,24 +288,49 @@ public static class MessageCodec
 	{
 		byte[] payload = new byte[HostDataHeaderSize + gamePayload.Length];
 
-		WriteHostData(payload, virtualClientId, gameChannel, gamePayload);
+		payload[0] = (byte)MessageType.Data;
+
+		BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(1, VirtualClientIdSize), virtualClientId);
+
+		payload[5] = gameChannel;
+
+		gamePayload.CopyTo(payload.AsSpan(HostDataHeaderSize, gamePayload.Length));
 
 		return payload;
 	}
 
 	public static bool TryReadHostData(ReadOnlySpan<byte> payload, out int targetVirtualClientId, out byte gameChannel, out byte[] gamePayload)
 	{
-		targetVirtualClientId = 0;
+		if (!TryReadHostDataSpan(payload, out targetVirtualClientId, out gameChannel, out ReadOnlySpan<byte> gamePayloadSpan))
+		{
+			gamePayload = [];
 
-		gameChannel = 0;
-
-		gamePayload = [];
-
-		if (payload.Length < HostDataHeaderSize || payload[0] != (byte)MessageType.Data) return false;
-
-		ReadHostData(payload, out targetVirtualClientId, out gameChannel, out ReadOnlySpan<byte> gamePayloadSpan);
+			return false;
+		}
 
 		gamePayload = gamePayloadSpan.ToArray();
+
+		return true;
+	}
+
+	public static bool TryReadHostDataSpan(ReadOnlySpan<byte> payload, out int targetVirtualClientId, out byte gameChannel, out ReadOnlySpan<byte> gamePayload)
+	{
+		if (payload.Length < HostDataHeaderSize || payload[0] != (byte)MessageType.Data)
+		{
+			targetVirtualClientId = 0;
+
+			gameChannel = 0;
+
+			gamePayload = ReadOnlySpan<byte>.Empty;
+
+			return false;
+		}
+
+		targetVirtualClientId = ReadVirtualClientId(payload);
+
+		gameChannel = payload[5];
+
+		gamePayload = payload[HostDataHeaderSize..];
 
 		return true;
 	}
@@ -345,22 +374,43 @@ public static class MessageCodec
 	{
 		byte[] payload = new byte[ClientDataHeaderSize + gamePayload.Length];
 
-		WriteClientData(payload, gameChannel, gamePayload);
+		payload[0] = (byte)MessageType.Data;
+
+		payload[1] = gameChannel;
+
+		gamePayload.CopyTo(payload.AsSpan(ClientDataHeaderSize, gamePayload.Length));
 
 		return payload;
 	}
 
 	public static bool TryReadClientData(ReadOnlySpan<byte> payload, out byte gameChannel, out byte[] gamePayload)
 	{
-		gameChannel = 0;
+		if (!TryReadClientDataSpan(payload, out gameChannel, out ReadOnlySpan<byte> gamePayloadSpan))
+		{
+			gamePayload = [];
 
-		gamePayload = [];
-
-		if (payload.Length < ClientDataHeaderSize || payload[0] != (byte)MessageType.Data) return false;
-
-		ReadClientData(payload, out gameChannel, out ReadOnlySpan<byte> gamePayloadSpan);
+			return false;
+		}
 
 		gamePayload = gamePayloadSpan.ToArray();
+
+		return true;
+	}
+
+	public static bool TryReadClientDataSpan(ReadOnlySpan<byte> payload, out byte gameChannel, out ReadOnlySpan<byte> gamePayload)
+	{
+		if (payload.Length < ClientDataHeaderSize || payload[0] != (byte)MessageType.Data)
+		{
+			gameChannel = 0;
+
+			gamePayload = ReadOnlySpan<byte>.Empty;
+
+			return false;
+		}
+
+		gameChannel = payload[1];
+
+		gamePayload = payload[ClientDataHeaderSize..];
 
 		return true;
 	}
@@ -437,7 +487,9 @@ public static class MessageCodec
 
 		if (payload.Length < RoomCreatedHeaderSize + roomCodeLength + roomHostTokenLength) return false;
 
-		ReadRoomCreated(payload, out roomCode, out roomHostToken);
+		roomCode = ReadString(payload, RoomCreatedHeaderSize, roomCodeLength);
+
+		roomHostToken = ReadString(payload, RoomCreatedHeaderSize + roomCodeLength, roomHostTokenLength);
 
 		return true;
 	}
@@ -521,7 +573,9 @@ public static class MessageCodec
 
 		if (payload.Length < HostPromotedHeaderSize + roomCodeLength + claimTokenLength) return false;
 
-		ReadHostPromoted(payload, out roomCode, out maximumClients, out claimToken);
+		roomCode = ReadString(payload, HostPromotedHeaderSize, roomCodeLength);
+
+		claimToken = ReadString(payload, HostPromotedHeaderSize + roomCodeLength, claimTokenLength);
 
 		return true;
 	}

@@ -414,7 +414,7 @@ internal sealed class Server : IDisposable
 
 			case MessageType.Data:
 			{
-				HandleData(session, payload);
+				HandleData(session, payload, deliveryMethod);
 
 				break;
 			}
@@ -653,20 +653,20 @@ internal sealed class Server : IDisposable
 		}
 	}
 
-	private void HandleData(PeerConnection session, ReadOnlySpan<byte> payload)
+	private void HandleData(PeerConnection session, ReadOnlySpan<byte> payload, DeliveryMethod deliveryMethod)
 	{
 		switch (session.Role)
 		{
 			case PeerRole.Host:
 			{
-				HandleDataFromHost(session, payload);
+				HandleDataFromHost(session, payload, deliveryMethod);
 
 				break;
 			}
 
 			case PeerRole.Client:
 			{
-				HandleDataFromClient(session, payload);
+				HandleDataFromClient(session, payload, deliveryMethod);
 
 				break;
 			}
@@ -680,7 +680,7 @@ internal sealed class Server : IDisposable
 		}
 	}
 
-	private void HandleDataFromHost(PeerConnection hostSession, ReadOnlySpan<byte> payload)
+	private void HandleDataFromHost(PeerConnection hostSession, ReadOnlySpan<byte> payload, DeliveryMethod deliveryMethod)
 	{
 		if (payload.Length < MessageCodec.HostDataHeaderSize || payload[0] != (byte)MessageType.Data)
 		{
@@ -691,7 +691,7 @@ internal sealed class Server : IDisposable
 
 		MessageCodec.ReadHostData(payload, out int targetVirtualClientId, out byte gameChannel, out ReadOnlySpan<byte> gamePayload);
 
-		DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
+		if (gameChannel is not ((byte)GameChannel.Reliable or (byte)GameChannel.Unreliable) || deliveryMethod != MapDeliveryMethod(gameChannel)) return;
 
 		bool isBroadcast = targetVirtualClientId == MessageCodec.BroadcastVirtualClientId;
 
@@ -775,7 +775,7 @@ internal sealed class Server : IDisposable
 		if (targetClient is not null) SendClientData(targetClient, gameChannel, gamePayload, deliveryMethod);
 	}
 
-	private void HandleDataFromClient(PeerConnection clientSession, ReadOnlySpan<byte> payload)
+	private void HandleDataFromClient(PeerConnection clientSession, ReadOnlySpan<byte> payload, DeliveryMethod deliveryMethod)
 	{
 		if (payload.Length < MessageCodec.ClientDataHeaderSize || payload[0] != (byte)MessageType.Data)
 		{
@@ -786,7 +786,7 @@ internal sealed class Server : IDisposable
 
 		MessageCodec.ReadClientData(payload, out byte gameChannel, out ReadOnlySpan<byte> gamePayload);
 
-		DeliveryMethod deliveryMethod = MapDeliveryMethod(gameChannel);
+		if (gameChannel is not ((byte)GameChannel.Reliable or (byte)GameChannel.Unreliable) || deliveryMethod != MapDeliveryMethod(gameChannel)) return;
 
 		PeerConnection host;
 
@@ -876,7 +876,16 @@ internal sealed class Server : IDisposable
 	{
 		if (!room.HasPendingHostClaim || room.PendingHostClaimExpiresAtUtc > now) return;
 
+		PeerConnection? pendingHostPromotionPeer = room.PendingHostPromotionPeer;
+
 		room.ClearPendingHostClaim();
+
+		if (pendingHostPromotionPeer is not null)
+		{
+			pendingHostPromotionPeer.Clear();
+
+			DisconnectPeer(pendingHostPromotionPeer);
+		}
 
 		NotifyClientsHostAvailabilityLocked(room, isAvailable: false);
 

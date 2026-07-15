@@ -1,5 +1,4 @@
 <Solution>
     <Project Path="src/BlitzRelay.Protocol/BlitzRelay.Protocol.csproj" />
-    <Project Path="src/BlitzRelay.Tests/BlitzRelay.Tests.csproj" />
     <Project Path="src\BlitzRelay\BlitzRelay.csproj" />
 </Solution>

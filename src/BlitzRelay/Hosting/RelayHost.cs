@@ -9,8 +9,7 @@ internal sealed class RelayHost
 (
 	Func<RelayHostOptions, ILoggerFactory, Server> serverFactory,
 	Func<RelayHostOptions, Server, WebApplication> httpApiFactory,
-	Func<ILoggerFactory> createLoggerFactory,
-	ICancellationSignal cancellationSignal
+	Func<ILoggerFactory> createLoggerFactory
 )
 {
 	public async Task<int> RunAsync(RelayHostOptions relayHostOptions, CancellationToken cancellationToken)
@@ -21,7 +20,7 @@ internal sealed class RelayHost
 
 		using CancellationTokenSource cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-		using IDisposable registration = cancellationSignal.Register(cancellationTokenSource);
+		Console.CancelKeyPress += ConsoleCancelKeyPressEventHandler;
 
 		await using WebApplication httpApi = httpApiFactory(relayHostOptions, server);
 
@@ -44,6 +43,17 @@ internal sealed class RelayHost
 		catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
 		{
 			return 0;
+		}
+		finally
+		{
+			Console.CancelKeyPress -= ConsoleCancelKeyPressEventHandler;
+		}
+
+		void ConsoleCancelKeyPressEventHandler(object? sender, ConsoleCancelEventArgs args)
+		{
+			args.Cancel = true;
+
+			cancellationTokenSource.Cancel();
 		}
 	}
 }

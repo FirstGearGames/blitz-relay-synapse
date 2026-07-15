@@ -125,9 +125,7 @@ internal static class Program
 				Cors = corsConfiguration,
 			};
 
-			ICancellationSignal cancellationSignal = new ConsoleCancellationSignal();
-
-			RelayHost host = new(CreateServer, RelayHttpApi.Build, CreateLoggerFactory, cancellationSignal);
+			RelayHost host = new(CreateServer, RelayHttpApi.Build, CreateLoggerFactory);
 
 			return await host.RunAsync(relayHostOptions, cancellationToken);
 

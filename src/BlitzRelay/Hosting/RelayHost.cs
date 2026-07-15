@@ -1,59 +1,90 @@
-﻿using BlitzRelay.Networking;
+using BlitzRelay.Http;
+using BlitzRelay.Networking;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace BlitzRelay.Hosting;
 
-internal sealed class RelayHost
-(
-	Func<RelayHostOptions, ILoggerFactory, Server> serverFactory,
-	Func<RelayHostOptions, Server, WebApplication> httpApiFactory,
-	Func<ILoggerFactory> createLoggerFactory
-)
+internal static class RelayHost
 {
-	public async Task<int> RunAsync(RelayHostOptions relayHostOptions, CancellationToken cancellationToken)
+	public static async Task<int> RunAsync(RelayHostOptions options, CancellationToken cancellationToken)
 	{
-		using ILoggerFactory loggerFactory = createLoggerFactory();
+		IHost host = BuildHost(options);
 
-		using Server server = serverFactory(relayHostOptions, loggerFactory);
+		RelayServerService service = host.Services.GetRequiredService<RelayServerService>();
 
-		using CancellationTokenSource cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		await host.RunAsync(cancellationToken);
 
-		Console.CancelKeyPress += ConsoleCancelKeyPressEventHandler;
+		return service.ExitCode;
+	}
 
-		await using WebApplication httpApi = httpApiFactory(relayHostOptions, server);
-
-		try
+	private static IHost BuildHost(RelayHostOptions options)
+	{
+		if (options.HttpApiEnabled)
 		{
-			Task<int> relayServerTask = server.RunAsync(cancellationTokenSource.Token);
+			WebApplicationBuilder webApplicationBuilder = WebApplication.CreateSlimBuilder();
 
-			await httpApi.StartAsync(CancellationToken.None);
+			ConfigureHost(webApplicationBuilder, options);
 
-			Task httpApiTask = httpApi.WaitForShutdownAsync(CancellationToken.None);
-
-			Task completedTask = await Task.WhenAny(relayServerTask, httpApiTask);
-
-			if (completedTask == relayServerTask) await httpApi.StopAsync(CancellationToken.None);
-
-			await cancellationTokenSource.CancelAsync();
-
-			return await relayServerTask;
-		}
-		catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
-		{
-			return 0;
-		}
-		finally
-		{
-			Console.CancelKeyPress -= ConsoleCancelKeyPressEventHandler;
+			return RelayHttpApi.Build(webApplicationBuilder, options);
 		}
 
-		void ConsoleCancelKeyPressEventHandler(object? sender, ConsoleCancelEventArgs args)
-		{
-			args.Cancel = true;
+		HostApplicationBuilder builder = Host.CreateEmptyApplicationBuilder(null);
 
-			cancellationTokenSource.Cancel();
+		ConfigureHost(builder, options);
+
+		return builder.Build();
+	}
+
+	private static void ConfigureHost(IHostApplicationBuilder builder, RelayHostOptions options)
+	{
+		builder.Logging
+			   .ClearProviders()
+			   .SetMinimumLevel(options.LogLevel)
+			   .AddConsole();
+
+		builder.Services
+			   .AddSingleton(serviceProvider => new Server(options.UdpPort, options.ConnectionKey, serviceProvider.GetRequiredService<ILogger<Server>>()))
+			   .AddSingleton<RelayServerService>()
+			   .AddHostedService(serviceProvider => serviceProvider.GetRequiredService<RelayServerService>());
+	}
+
+	private sealed class RelayServerService(Server server, IHostApplicationLifetime lifetime) : BackgroundService
+	{
+		public int ExitCode { get; private set; }
+
+		protected async override Task ExecuteAsync(CancellationToken stoppingToken)
+		{
+			try
+			{
+				ExitCode = await server.RunAsync(stoppingToken);
+			}
+			catch
+			{
+				ExitCode = 1;
+
+				throw;
+			}
+			finally
+			{
+				StopHost();
+			}
+		}
+
+		private void StopHost()
+		{
+			if (lifetime.ApplicationStopping.IsCancellationRequested) return;
+
+			if (lifetime.ApplicationStarted.IsCancellationRequested)
+			{
+				lifetime.StopApplication();
+
+				return;
+			}
+
+			lifetime.ApplicationStarted.Register(lifetime.StopApplication);
 		}
 	}
 }

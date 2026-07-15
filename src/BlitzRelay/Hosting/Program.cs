@@ -1,5 +1,3 @@
-using BlitzRelay.Http;
-using BlitzRelay.Networking;
 using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Text.Json;
@@ -17,6 +15,8 @@ internal static class Program
 	private const string PortOptionShortName = "-p";
 
 	private const string HttpPortOptionName = "--http-port";
+
+	private const string DisableHttpOptionName = "--disable-http";
 
 	private const string LogLevelOptionName = "--log-level";
 
@@ -37,13 +37,6 @@ internal static class Program
 
 		string? httpAdminToken = Environment.GetEnvironmentVariable(HttpAdminTokenEnvironmentVariable);
 
-		if (string.IsNullOrWhiteSpace(httpAdminToken))
-		{
-			await Console.Error.WriteLineAsync($"'{HttpAdminTokenEnvironmentVariable}' environment variable is not set.");
-
-			return 1;
-		}
-
 		Option<int> portOption = new(PortOptionName, PortOptionShortName)
 		{
 			DefaultValueFactory = _ => 7770,
@@ -52,6 +45,11 @@ internal static class Program
 		Option<int> httpPortOption = new(HttpPortOptionName)
 		{
 			DefaultValueFactory = _ => 7771,
+		};
+
+		Option<bool> disableHttpOption = new(DisableHttpOptionName)
+		{
+			Description = "Completely disable the HTTP API.",
 		};
 
 		Option<LogLevel> logLevelOption = new(LogLevelOptionName, LogLevelOptionShortName)
@@ -70,6 +68,7 @@ internal static class Program
 			{
 				portOption,
 				httpPortOption,
+				disableHttpOption,
 				logLevelOption,
 				corsOption,
 			},
@@ -81,11 +80,20 @@ internal static class Program
 
 		async Task<int> RootCommandAction(ParseResult parseResult, CancellationToken cancellationToken)
 		{
+			bool httpApiEnabled = !parseResult.GetValue(disableHttpOption);
+
+			if (httpApiEnabled && string.IsNullOrWhiteSpace(httpAdminToken))
+			{
+				await Console.Error.WriteLineAsync($"'{HttpAdminTokenEnvironmentVariable}' environment variable is not set.");
+
+				return 1;
+			}
+
 			CorsConfiguration? corsConfiguration = null;
 
 			FileInfo? corsConfigurationFile = parseResult.GetValue(corsOption);
 
-			if (corsConfigurationFile is not null)
+			if (httpApiEnabled && corsConfigurationFile is not null)
 			{
 				if (!corsConfigurationFile.Exists)
 				{
@@ -116,28 +124,18 @@ internal static class Program
 
 				HttpPort = parseResult.GetRequiredValue(httpPortOption),
 
+				HttpApiEnabled = httpApiEnabled,
+
 				LogLevel = parseResult.GetRequiredValue(logLevelOption),
 
 				ConnectionKey = connectionKey,
 
-				HttpAdminToken = httpAdminToken,
+				HttpAdminToken = httpAdminToken ?? string.Empty,
 
 				Cors = corsConfiguration,
 			};
 
-			RelayHost host = new(CreateServer, RelayHttpApi.Build, CreateLoggerFactory);
-
-			return await host.RunAsync(relayHostOptions, cancellationToken);
-
-			Server CreateServer(RelayHostOptions options, ILoggerFactory loggerFactory)
-			{
-				return new Server(options.UdpPort, options.ConnectionKey, loggerFactory.CreateLogger<Server>());
-			}
-
-			ILoggerFactory CreateLoggerFactory()
-			{
-				return LoggerFactory.Create(builder => builder.SetMinimumLevel(relayHostOptions.LogLevel).AddConsole());
-			}
+			return await RelayHost.RunAsync(relayHostOptions, cancellationToken);
 		}
 	}
 }

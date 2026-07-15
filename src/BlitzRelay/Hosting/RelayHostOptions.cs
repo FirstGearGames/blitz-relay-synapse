@@ -9,6 +9,8 @@ public sealed class RelayHostOptions
 
 	public required int HttpPort { get; init; }
 
+	public bool HttpApiEnabled { get; init; } = true;
+
 	public required LogLevel LogLevel { get; init; }
 
 	public required string ConnectionKey { get; init; }

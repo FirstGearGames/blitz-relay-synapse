@@ -15,10 +15,8 @@ namespace BlitzRelay.Http;
 
 internal static class RelayHttpApi
 {
-	public static WebApplication Build(RelayHostOptions relayHostOptions, Server relayServer)
+	public static WebApplication Build(WebApplicationBuilder builder, RelayHostOptions relayHostOptions)
 	{
-		WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
 		builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(relayHostOptions.HttpPort));
 
 		builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
@@ -70,6 +68,8 @@ internal static class RelayHttpApi
 		});
 
 		WebApplication app = builder.Build();
+
+		Server relayServer = app.Services.GetRequiredService<Server>();
 
 		app.UseCors();
 

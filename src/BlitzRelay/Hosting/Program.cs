@@ -1,3 +1,4 @@
+using BlitzRelay.Serialization;
 using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Text.Json;
@@ -106,9 +107,7 @@ internal static class Program
 				{
 					await using FileStream stream = corsConfigurationFile.OpenRead();
 
-					JsonSerializerOptions jsonSerializerOptions = new(JsonSerializerDefaults.Web);
-
-					corsConfiguration = await JsonSerializer.DeserializeAsync<CorsConfiguration>(stream, jsonSerializerOptions, cancellationToken);
+					corsConfiguration = await JsonSerializer.DeserializeAsync<CorsConfiguration>(stream, AppJsonSerializerContext.Default.CorsConfiguration, cancellationToken);
 				}
 				catch (Exception exception)
 				{

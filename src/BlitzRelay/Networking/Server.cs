@@ -6,6 +6,7 @@ using SynapseSocket.Core;
 using SynapseSocket.Core.Configuration;
 using SynapseSocket.Core.Events;
 using System.Buffers;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,7 +15,7 @@ namespace BlitzRelay.Networking;
 
 internal sealed class Server : IDisposable
 {
-	private static readonly TimeSpan PollDelay = TimeSpan.FromMilliseconds(15);
+	private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(15);
 
 	private static readonly TimeSpan HostClaimTimeout = TimeSpan.FromSeconds(10);
 
@@ -144,42 +145,29 @@ internal sealed class Server : IDisposable
 		_synapseManager.UnhandledException += HandleUnhandledException;
 	}
 
-	public async Task<int> RunAsync(CancellationToken cancellationToken)
+	public Task<int> RunAsync(CancellationToken cancellationToken)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 
-		if (!TryStart()) return 1;
+		if (!TryStart()) return Task.FromResult(1);
 
 		Log.RelayServerStarted(_logger, _port, MaximumTransmissionUnit, KeepAliveIntervalMilliseconds, TimeoutMilliseconds);
 
-		try
+		TaskCompletionSource<int> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		// SynapseSocket only receives, retransmits, acknowledges and times peers out while Poll is running, so the poll
+		// loop cannot share the thread pool with the HTTP API: a pool busy serving requests would delay the poll and
+		// stall the relay itself. It gets a thread of its own instead.
+		Thread pollThread = new(() => RunPollLoop(cancellationToken, completion))
 		{
-			while (!cancellationToken.IsCancellationRequested)
-			{
-				Poll();
+			IsBackground = true,
 
-				await Task.Delay(PollDelay, cancellationToken);
-			}
-		}
-		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-		{
-			// Operation cancelled, do nothing.
-		}
-		finally
-		{
-			Log.RelayServerStopping(_logger);
+			Name = "BlitzRelay-Poll",
+		};
 
-			lock (_mutex)
-			{
-				_synapseManager.Stop();
+		pollThread.Start();
 
-				_sessionsByConnection.Clear();
-
-				_pendingDisconnects.Clear();
-			}
-		}
-
-		return 0;
+		return completion.Task;
 	}
 
 	public bool TryCreateReservedRoom(ushort maximumClients, string displayName, bool isPublic, IReadOnlyDictionary<string, string>? metadata, out RoomSnapshot? snapshot, out ErrorCode errorCode)
@@ -320,6 +308,8 @@ internal sealed class Server : IDisposable
 
 		lock (_mutex)
 		{
+			UnsubscribeFromTransport();
+
 			_synapseManager.Dispose();
 
 			_sessionsByConnection.Clear();
@@ -364,6 +354,63 @@ internal sealed class Server : IDisposable
 		}
 	}
 
+	// Paces itself off the poll's own start so a slow poll shortens the wait instead of accumulating drift, and waits on
+	// the cancellation handle so a stop is picked up immediately without involving the thread pool.
+	private void RunPollLoop(CancellationToken cancellationToken, TaskCompletionSource<int> completion)
+	{
+		try
+		{
+			while (!cancellationToken.IsCancellationRequested)
+			{
+				long pollStartedTimestamp = Stopwatch.GetTimestamp();
+
+				Poll();
+
+				TimeSpan remaining = PollInterval - Stopwatch.GetElapsedTime(pollStartedTimestamp);
+
+				if (remaining > TimeSpan.Zero) cancellationToken.WaitHandle.WaitOne(remaining);
+			}
+
+			completion.TrySetResult(0);
+		}
+		catch (Exception exception)
+		{
+			completion.TrySetException(exception);
+		}
+		finally
+		{
+			Log.RelayServerStopping(_logger);
+
+			lock (_mutex)
+			{
+				UnsubscribeFromTransport();
+
+				_synapseManager.Stop();
+
+				_sessionsByConnection.Clear();
+
+				_pendingDisconnects.Clear();
+			}
+		}
+	}
+
+	// Detached before the engine is stopped or disposed so a late callback cannot walk rooms that are being torn down.
+	// Unsubscribing twice is harmless, and both shutdown paths do it.
+	private void UnsubscribeFromTransport()
+	{
+		_synapseManager.ConnectionEstablished -= HandleConnectionEstablished;
+
+		_synapseManager.ConnectionClosed -= HandleConnectionClosed;
+
+		_synapseManager.ConnectionFailed -= HandleConnectionFailed;
+
+		_synapseManager.PacketReceived -= HandlePacketReceived;
+
+		_synapseManager.ViolationDetected -= HandleViolationDetected;
+
+		_synapseManager.UnhandledException -= HandleUnhandledException;
+	}
+
 	// Pumps the transport and everything that runs off the relay's own clock. Every callback SynapseSocket raises
 	// happens inside this call, on this thread, with the lock held.
 	private void Poll()
@@ -406,9 +453,18 @@ internal sealed class Server : IDisposable
 
 	private void HandleConnectionClosed(ConnectionEventArgs connectionEventArgs)
 	{
+		CloseSession(connectionEventArgs.Connection);
+	}
+
+	// Idempotent on purpose: a peer can be reported gone by both a lifecycle violation and a ConnectionClosed event, and
+	// whichever arrives first is the one that tears the session down.
+	private void CloseSession(SynapseConnection? connection)
+	{
+		if (connection is null) return;
+
 		lock (_mutex)
 		{
-			if (!_sessionsByConnection.Remove(connectionEventArgs.Connection, out PeerConnection? session)) return;
+			if (!_sessionsByConnection.Remove(connection, out PeerConnection? session)) return;
 
 			session.IsConnected = false;
 
@@ -510,15 +566,22 @@ internal sealed class Server : IDisposable
 		Log.ConnectionRejected(_logger, connectionFailedEventArgs.EndPoint, connectionFailedEventArgs.Reason, connectionFailedEventArgs.Message);
 	}
 
-	// Every security decision the transport makes is reported here. The relay only observes: the action the engine
-	// chose for itself stands, so a flooding or malformed peer is dropped exactly as SynapseSocket intends.
+	// Every security decision the transport makes is reported here. For a genuine violation the relay only observes: the
+	// action the engine chose for itself stands, so a flooding or malformed peer is dropped exactly as SynapseSocket
+	// intends.
 	private ViolationAction HandleViolationDetected(ViolationEventArgs violationEventArgs)
 	{
-		if (violationEventArgs.Reason is ViolationReason.Timeout or ViolationReason.PeerDisconnect)
+		/* A peer that left, timed out, or exhausted its reliable retries is gone rather than misbehaving. Not every one
+		 * of these paths is guaranteed to also raise ConnectionClosed, and a session the relay never closes keeps its
+		 * seat in a room forever, so the teardown is driven from here too. Kick lets the engine drop its own side
+		 * without blacklisting an address that is entitled to reconnect. */
+		if (violationEventArgs.Reason is ViolationReason.Timeout or ViolationReason.PeerDisconnect or ViolationReason.ReliableExhausted)
 		{
 			Log.TransportPeerLifecycleNotice(_logger, violationEventArgs.EndPoint, violationEventArgs.Signature, violationEventArgs.Reason);
 
-			return violationEventArgs.Action;
+			CloseSession(violationEventArgs.Connection);
+
+			return ViolationAction.Kick;
 		}
 
 		Log.TransportViolationDetected(_logger, violationEventArgs.EndPoint, violationEventArgs.Signature, violationEventArgs.Reason, violationEventArgs.PacketSize, violationEventArgs.Details);
@@ -535,7 +598,14 @@ internal sealed class Server : IDisposable
 	{
 		lock (_mutex)
 		{
-			if (!_sessionsByConnection.TryGetValue(packetReceivedEventArgs.Connection, out PeerConnection? session)) return;
+			if (!_sessionsByConnection.TryGetValue(packetReceivedEventArgs.Connection, out PeerConnection? session))
+			{
+				// ConnectionEstablished is dispatched before any packet from the same connection, so this means the
+				// session was torn down and the peer is still talking.
+				Log.PayloadFromUnknownSession(_logger, packetReceivedEventArgs.Connection.RemoteEndPoint);
+
+				return;
+			}
 
 			ArraySegment<byte> payload = packetReceivedEventArgs.Payload;
 

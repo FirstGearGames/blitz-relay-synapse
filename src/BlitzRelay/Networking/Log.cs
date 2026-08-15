@@ -37,6 +37,9 @@ internal static partial class Log
 	[LoggerMessage(Level = LogLevel.Debug, Message = "Received relay payload from peer 0x{PeerSignature:X16}: bytes={Length}, reliable={IsReliable}.")]
 	public static partial void RelayPayloadReceived(ILogger logger, ulong peerSignature, int length, bool isReliable);
 
+	[LoggerMessage(Level = LogLevel.Debug, Message = "Received a payload from {RemoteEndPoint} with no relay session; dropping it.")]
+	public static partial void PayloadFromUnknownSession(ILogger logger, IPEndPoint remoteEndPoint);
+
 	[LoggerMessage(Level = LogLevel.Warning, Message = "Peer 0x{PeerSignature:X16} sent unknown relay message type 0x{MessageType:X2}.")]
 	public static partial void UnknownRelayMessageType(ILogger logger, ulong peerSignature, byte messageType);
 

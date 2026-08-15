@@ -1,6 +1,7 @@
 using BlitzRelay.Networking;
 using BlitzRelay.Protocol;
 using BlitzRelay.Rooms;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -19,23 +20,23 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 	private static readonly TimeSpan NegativeWaitTimeout = TimeSpan.FromSeconds(2);
 
 	[Fact]
-	public async Task HostAndClientExchangeDataThroughTheRelay()
+	public void HostAndClientExchangeDataThroughTheRelay()
 	{
 		using RelayHostFixture relay = new(output, ConnectionKey);
 
-		await relay.WaitUntilStartedAsync();
+		relay.WaitUntilStarted();
 
 		using RelayTestPeer host = new();
 
 		using RelayTestPeer client = new();
 
-		await host.ConnectAsync(relay.Port, WaitTimeout);
+		host.Connect(relay.Port, WaitTimeout);
 
-		await host.AuthenticateAsync(ConnectionKey);
+		host.Authenticate(ConnectionKey);
 
 		host.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
 
-		byte[] roomCreated = await host.WaitForMessageAsync(MessageType.RoomCreated, WaitTimeout);
+		byte[] roomCreated = host.WaitForMessage(MessageType.RoomCreated, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadRoomCreated(roomCreated, out string roomCode, out string roomHostToken));
 
@@ -43,17 +44,17 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		Assert.NotEmpty(roomHostToken);
 
-		await client.ConnectAsync(relay.Port, WaitTimeout);
+		client.Connect(relay.Port, WaitTimeout);
 
-		await client.AuthenticateAsync(ConnectionKey);
+		client.Authenticate(ConnectionKey);
 
 		client.Send(MessageCodec.CreateClientJoin(roomCode), isReliable: true);
 
-		byte[] joinSuccess = await client.WaitForMessageAsync(MessageType.JoinSuccess, WaitTimeout);
+		byte[] joinSuccess = client.WaitForMessage(MessageType.JoinSuccess, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadJoinSuccess(joinSuccess));
 
-		byte[] connected = await host.WaitForMessageAsync(MessageType.Connected, WaitTimeout);
+		byte[] connected = host.WaitForMessage(MessageType.Connected, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadConnected(connected, out int virtualClientId));
 
@@ -63,7 +64,7 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		host.Send(MessageCodec.CreateHostData(virtualClientId, (byte)GameChannel.Reliable, reliablePayload), isReliable: true);
 
-		await AssertClientDataAsync(client, GameChannel.Reliable, reliablePayload);
+		AssertClientData(client, GameChannel.Reliable, reliablePayload);
 
 		/* Host broadcast, unreliably. */
 
@@ -71,7 +72,7 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		host.Send(MessageCodec.CreateHostData(MessageCodec.BroadcastVirtualClientId, (byte)GameChannel.Unreliable, unreliablePayload), isReliable: false);
 
-		await AssertClientDataAsync(client, GameChannel.Unreliable, unreliablePayload);
+		AssertClientData(client, GameChannel.Unreliable, unreliablePayload);
 
 		/* Client to host, reliably. */
 
@@ -79,7 +80,7 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		client.Send(MessageCodec.CreateClientData((byte)GameChannel.Reliable, clientPayload), isReliable: true);
 
-		await AssertHostDataAsync(host, virtualClientId, GameChannel.Reliable, clientPayload);
+		AssertHostData(host, virtualClientId, GameChannel.Reliable, clientPayload);
 
 		/* A payload well past the MTU, which only arrives if segmentation survives the relay. */
 
@@ -87,17 +88,17 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		client.Send(MessageCodec.CreateClientData((byte)GameChannel.Reliable, segmentedPayload), isReliable: true);
 
-		await AssertHostDataAsync(host, virtualClientId, GameChannel.Reliable, segmentedPayload);
+		AssertHostData(host, virtualClientId, GameChannel.Reliable, segmentedPayload);
 
 		host.Send(MessageCodec.CreateHostData(virtualClientId, (byte)GameChannel.Reliable, segmentedPayload), isReliable: true);
 
-		await AssertClientDataAsync(client, GameChannel.Reliable, segmentedPayload);
+		AssertClientData(client, GameChannel.Reliable, segmentedPayload);
 
 		/* The host is told when a client leaves. */
 
 		client.Disconnect();
 
-		byte[] disconnected = await host.WaitForMessageAsync(MessageType.Disconnected, WaitTimeout);
+		byte[] disconnected = host.WaitForMessage(MessageType.Disconnected, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadDisconnected(disconnected, out int disconnectedVirtualClientId));
 
@@ -105,19 +106,19 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 	}
 
 	[Fact]
-	public async Task RelayRejectsAnInvalidConnectionKey()
+	public void RelayRejectsAnInvalidConnectionKey()
 	{
 		using RelayHostFixture relay = new(output, ConnectionKey);
 
-		await relay.WaitUntilStartedAsync();
+		relay.WaitUntilStarted();
 
 		using RelayTestPeer peer = new();
 
-		await peer.ConnectAsync(relay.Port, WaitTimeout);
+		peer.Connect(relay.Port, WaitTimeout);
 
-		await peer.AuthenticateAsync("wrong-connection-key");
+		peer.Authenticate("wrong-connection-key");
 
-		byte[] error = await peer.WaitForMessageAsync(MessageType.Error, WaitTimeout);
+		byte[] error = peer.WaitForMessage(MessageType.Error, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadError(error, out ErrorCode errorCode));
 
@@ -125,39 +126,39 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		peer.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
 
-		Assert.False(await peer.HasReceivedMessageAsync(MessageType.RoomCreated, NegativeWaitTimeout));
+		Assert.False(peer.HasReceivedMessage(MessageType.RoomCreated, NegativeWaitTimeout));
 	}
 
 	[Fact]
-	public async Task RelayIgnoresMessagesFromAnUnauthenticatedPeer()
+	public void RelayIgnoresMessagesFromAnUnauthenticatedPeer()
 	{
 		using RelayHostFixture relay = new(output, ConnectionKey);
 
-		await relay.WaitUntilStartedAsync();
+		relay.WaitUntilStarted();
 
 		using RelayTestPeer peer = new();
 
-		await peer.ConnectAsync(relay.Port, WaitTimeout);
+		peer.Connect(relay.Port, WaitTimeout);
 
 		peer.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
 
-		Assert.False(await peer.HasReceivedMessageAsync(MessageType.RoomCreated, NegativeWaitTimeout));
+		Assert.False(peer.HasReceivedMessage(MessageType.RoomCreated, NegativeWaitTimeout));
 
 		/* The same peer is served as soon as it presents the key. */
 
-		await peer.AuthenticateAsync(ConnectionKey);
+		peer.Authenticate(ConnectionKey);
 
 		peer.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
 
-		Assert.True(await peer.HasReceivedMessageAsync(MessageType.RoomCreated, WaitTimeout));
+		Assert.True(peer.HasReceivedMessage(MessageType.RoomCreated, WaitTimeout));
 	}
 
 	[Fact]
-	public async Task PersistentRoomPromotesAClientToHost()
+	public void PersistentRoomPromotesAClientToHost()
 	{
 		using RelayHostFixture relay = new(output, ConnectionKey);
 
-		await relay.WaitUntilStartedAsync();
+		relay.WaitUntilStarted();
 
 		Assert.True(relay.Server.TryCreateReservedRoom(4, "promotion-room", isPublic: true, metadata: null, out RoomSnapshot? snapshot, out ErrorCode _));
 
@@ -165,15 +166,15 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		using RelayTestPeer joiningPeer = new();
 
-		await joiningPeer.ConnectAsync(relay.Port, WaitTimeout);
+		joiningPeer.Connect(relay.Port, WaitTimeout);
 
-		await joiningPeer.AuthenticateAsync(ConnectionKey);
+		joiningPeer.Authenticate(ConnectionKey);
 
 		joiningPeer.Send(MessageCodec.CreateClientJoin(roomCode), isReliable: true);
 
 		/* A reserved room with no host promotes the first client to join it. */
 
-		byte[] hostPromoted = await joiningPeer.WaitForMessageAsync(MessageType.HostPromoted, WaitTimeout);
+		byte[] hostPromoted = joiningPeer.WaitForMessage(MessageType.HostPromoted, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadHostPromoted(hostPromoted, out string promotedRoomCode, out int maximumClients, out string claimToken));
 
@@ -185,17 +186,17 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		joiningPeer.Send(MessageCodec.CreateHostPromotionAck(promotedRoomCode, claimToken), isReliable: true);
 
-		await joiningPeer.WaitUntilClosedAsync(WaitTimeout);
+		joiningPeer.WaitUntilClosed(WaitTimeout);
 
 		using RelayTestPeer promotedHost = new();
 
-		await promotedHost.ConnectAsync(relay.Port, WaitTimeout);
+		promotedHost.Connect(relay.Port, WaitTimeout);
 
-		await promotedHost.AuthenticateAsync(ConnectionKey);
+		promotedHost.Authenticate(ConnectionKey);
 
 		promotedHost.Send(MessageCodec.CreateHostClaim(promotedRoomCode, claimToken), isReliable: true);
 
-		byte[] roomCreated = await promotedHost.WaitForMessageAsync(MessageType.RoomCreated, WaitTimeout);
+		byte[] roomCreated = promotedHost.WaitForMessage(MessageType.RoomCreated, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadRoomCreated(roomCreated, out string claimedRoomCode, out string _));
 
@@ -204,9 +205,66 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		Assert.True(relay.Server.GetRoomSnapshot(roomCode)!.HasHost);
 	}
 
-	private static async Task AssertClientDataAsync(RelayTestPeer client, GameChannel gameChannel, byte[] expectedPayload)
+	// SynapseSocket only moves datagrams while Poll is running, so a relay that paced its poll loop on the thread pool
+	// would stop relaying whenever the pool was busy, which in this process it always could be: the HTTP admin API runs
+	// on the same pool. The poll loop owns a thread, and this pins that.
+	[Fact]
+	public void RelayKeepsRelayingWhileTheThreadPoolIsSaturated()
 	{
-		byte[] message = await client.WaitForMessageAsync(MessageType.Data, WaitTimeout);
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		using RelayTestPeer host = new();
+
+		using RelayTestPeer client = new();
+
+		host.Connect(relay.Port, WaitTimeout);
+
+		host.Authenticate(ConnectionKey);
+
+		host.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadRoomCreated(host.WaitForMessage(MessageType.RoomCreated, WaitTimeout), out string roomCode, out string _));
+
+		client.Connect(relay.Port, WaitTimeout);
+
+		client.Authenticate(ConnectionKey);
+
+		client.Send(MessageCodec.CreateClientJoin(roomCode), isReliable: true);
+
+		client.WaitForMessage(MessageType.JoinSuccess, WaitTimeout);
+
+		Assert.True(MessageCodec.TryReadConnected(host.WaitForMessage(MessageType.Connected, WaitTimeout), out int virtualClientId));
+
+		using ThreadPoolSaturation saturation = new();
+
+		saturation.Occupy();
+
+		/* Let any continuation that was already scheduled run, so what follows measures the saturated steady state
+		 * rather than the tail of a pool that had not clogged yet. */
+		Thread.Sleep(TimeSpan.FromMilliseconds(500));
+
+		byte[] payload = Encoding.UTF8.GetBytes("relayed-under-a-saturated-pool");
+
+		long sentTimestamp = Stopwatch.GetTimestamp();
+
+		host.Send(MessageCodec.CreateHostData(virtualClientId, (byte)GameChannel.Reliable, payload), isReliable: true);
+
+		AssertClientData(client, GameChannel.Reliable, payload);
+
+		TimeSpan elapsed = Stopwatch.GetElapsedTime(sentTimestamp);
+
+		output.WriteLine($"relayed in {elapsed.TotalMilliseconds:0} ms with {saturation.OccupiedWorkItems} work items occupying the pool");
+
+		/* Measured on the poll thread: ~50 ms for the two hops. The same relay pacing itself with await Task.Delay on
+		 * the saturated pool took ~680 ms, so this sits well clear of both. */
+		Assert.True(elapsed < TimeSpan.FromMilliseconds(250), $"Relaying took {elapsed.TotalMilliseconds:0} ms while the thread pool was saturated.");
+	}
+
+	private static void AssertClientData(RelayTestPeer client, GameChannel gameChannel, byte[] expectedPayload)
+	{
+		byte[] message = client.WaitForMessage(MessageType.Data, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadClientData(message, out byte receivedGameChannel, out byte[] receivedPayload));
 
@@ -215,9 +273,9 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		Assert.Equal(expectedPayload, receivedPayload);
 	}
 
-	private static async Task AssertHostDataAsync(RelayTestPeer host, int expectedVirtualClientId, GameChannel gameChannel, byte[] expectedPayload)
+	private static void AssertHostData(RelayTestPeer host, int expectedVirtualClientId, GameChannel gameChannel, byte[] expectedPayload)
 	{
-		byte[] message = await host.WaitForMessageAsync(MessageType.Data, WaitTimeout);
+		byte[] message = host.WaitForMessage(MessageType.Data, WaitTimeout);
 
 		Assert.True(MessageCodec.TryReadHostData(message, out int receivedVirtualClientId, out byte receivedGameChannel, out byte[] receivedPayload));
 
@@ -238,6 +296,49 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		}
 
 		return payload;
+	}
+
+	// Fills every worker the pool is willing to hand out without growing, so anything queued behind it waits on the
+	// pool's injection rate of roughly one thread per second.
+	private sealed class ThreadPoolSaturation : IDisposable
+	{
+		public int OccupiedWorkItems { get; private set; }
+
+		private readonly ManualResetEventSlim _release = new(initialState: false);
+
+		public void Occupy()
+		{
+			ThreadPool.GetMinThreads(out int minimumWorkerThreads, out int _);
+
+			ThreadPool.GetAvailableThreads(out int availableWorkerThreads, out int _);
+
+			OccupiedWorkItems = Math.Max(minimumWorkerThreads, availableWorkerThreads) + 8;
+
+			CountdownEvent occupied = new(OccupiedWorkItems);
+
+			for (int i = 0; i < OccupiedWorkItems; i++)
+			{
+				ThreadPool.UnsafeQueueUserWorkItem(_ =>
+				{
+					occupied.Signal();
+
+					_release.Wait();
+				}, null);
+			}
+
+			/* Only the items that got a worker signal, so wait for as many as the pool can seat rather than all of them. */
+			occupied.Wait(TimeSpan.FromSeconds(2));
+		}
+
+		public void Dispose()
+		{
+			_release.Set();
+
+			/* Give the released workers a moment to unwind before the next test measures the pool. */
+			Thread.Sleep(TimeSpan.FromMilliseconds(50));
+
+			_release.Dispose();
+		}
 	}
 
 	private sealed class RelayHostFixture : IDisposable
@@ -263,13 +364,13 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 			_server = new Server(Port, connectionKey, new TestOutputLogger<Server>(output));
 
-			_runTask = Task.Run(() => _server.RunAsync(_cancellation.Token));
+			_runTask = _server.RunAsync(_cancellation.Token);
 		}
 
 		// The relay binds inside RunAsync, and a handshake that arrives before the bind is simply not heard.
-		public async Task WaitUntilStartedAsync()
+		public void WaitUntilStarted()
 		{
-			await Task.Delay(TimeSpan.FromMilliseconds(500));
+			Thread.Sleep(TimeSpan.FromMilliseconds(250));
 		}
 
 		public void Dispose()

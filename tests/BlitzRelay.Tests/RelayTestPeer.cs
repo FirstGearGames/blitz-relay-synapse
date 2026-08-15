@@ -2,21 +2,25 @@ using BlitzRelay.Protocol;
 using SynapseSocket.Connections;
 using SynapseSocket.Core;
 using SynapseSocket.Core.Configuration;
+using System.Diagnostics;
 using System.Net;
 
 namespace BlitzRelay.Tests;
 
 // A real SynapseSocket peer on a real UDP socket. Nothing here is mocked: the relay under test sees exactly what a
-// game client would put on the wire.
+// game client would put on the wire. The peer pumps on a thread of its own and every wait blocks rather than awaits,
+// so a test can saturate the thread pool without stalling the peer that is supposed to be measuring the relay.
 internal sealed class RelayTestPeer : IDisposable
 {
-	private static readonly TimeSpan PumpDelay = TimeSpan.FromMilliseconds(5);
+	private static readonly TimeSpan PumpInterval = TimeSpan.FromMilliseconds(5);
+
+	private static readonly TimeSpan WaitPollInterval = TimeSpan.FromMilliseconds(5);
 
 	private readonly SynapseManager _synapseManager;
 
 	private readonly CancellationTokenSource _cancellation;
 
-	private readonly Task _pumpTask;
+	private readonly Thread _pumpThread;
 
 	private readonly Lock _mutex = new();
 
@@ -74,35 +78,42 @@ internal sealed class RelayTestPeer : IDisposable
 
 		_synapseManager.Start();
 
-		_pumpTask = Task.Run(PumpAsync);
+		_pumpThread = new Thread(Pump)
+		{
+			IsBackground = true,
+
+			Name = "RelayTestPeer-Pump",
+		};
+
+		_pumpThread.Start();
 	}
 
 	// A handshake is a single unacknowledged datagram, so a peer that hears nothing back sends another one.
-	public async Task ConnectAsync(int relayPort, TimeSpan timeout)
+	public void Connect(int relayPort, TimeSpan timeout)
 	{
 		IPEndPoint relayEndPoint = new(IPAddress.Loopback, relayPort);
 
-		DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout);
+		long startedTimestamp = Stopwatch.GetTimestamp();
 
-		while (!_isConnected && DateTimeOffset.UtcNow < deadline)
+		while (!_isConnected && Stopwatch.GetElapsedTime(startedTimestamp) < timeout)
 		{
 			lock (_mutex)
 			{
 				_connection = _synapseManager.Connect(relayEndPoint);
 			}
 
-			await WaitUntilAsync(() => _isConnected, TimeSpan.FromSeconds(1), "connection to be established", throwOnTimeout: false);
+			WaitUntil(() => _isConnected, TimeSpan.FromSeconds(1));
 		}
 
 		if (!_isConnected) throw new TimeoutException($"Timed out after {timeout.TotalSeconds:0.##}s waiting for a connection to the relay on port {relayPort}.");
 	}
 
-	public async Task AuthenticateAsync(string connectionKey)
+	public void Authenticate(string connectionKey)
 	{
 		Send(MessageCodec.CreateAuthenticate(connectionKey), isReliable: true);
 
 		// A successful authentication is answered with silence, so give the relay a poll or two to record it.
-		await Task.Delay(TimeSpan.FromMilliseconds(100));
+		Thread.Sleep(TimeSpan.FromMilliseconds(100));
 	}
 
 	public void Send(byte[] payload, bool isReliable)
@@ -126,68 +137,48 @@ internal sealed class RelayTestPeer : IDisposable
 	}
 
 	// Returns the first received message of the requested type, removing it so a later wait sees the next one.
-	public async Task<byte[]> WaitForMessageAsync(MessageType messageType, TimeSpan timeout)
+	public byte[] WaitForMessage(MessageType messageType, TimeSpan timeout)
 	{
 		byte[]? message = null;
 
-		await WaitUntilAsync(() => TryTakeMessage(messageType, out message), timeout, $"a {messageType} message");
+		if (!WaitUntil(() => TryTakeMessage(messageType, out message), timeout)) throw new TimeoutException($"Timed out after {timeout.TotalSeconds:0.##}s waiting for a {messageType} message.");
 
 		return message!;
 	}
 
-	public async Task WaitUntilClosedAsync(TimeSpan timeout)
+	public bool HasReceivedMessage(MessageType messageType, TimeSpan within)
 	{
-		await WaitUntilAsync(() => _isClosed, timeout, "the relay to close the connection");
+		return WaitUntil(() => TryTakeMessage(messageType, out _), within);
 	}
 
-	public async Task<bool> HasReceivedMessageAsync(MessageType messageType, TimeSpan within)
+	public void WaitUntilClosed(TimeSpan timeout)
 	{
-		byte[]? message = null;
-
-		try
-		{
-			await WaitUntilAsync(() => TryTakeMessage(messageType, out message), within, $"a {messageType} message");
-
-			return true;
-		}
-		catch (TimeoutException)
-		{
-			return false;
-		}
+		if (!WaitUntil(() => _isClosed, timeout)) throw new TimeoutException($"Timed out after {timeout.TotalSeconds:0.##}s waiting for the relay to close the connection.");
 	}
 
 	public void Dispose()
 	{
 		_cancellation.Cancel();
 
-		try
-		{
-			_pumpTask.Wait(TimeSpan.FromSeconds(5));
-		}
-		catch (AggregateException)
-		{
-			// The pump was cancelled, which is the expected way for it to end.
-		}
+		_pumpThread.Join(TimeSpan.FromSeconds(5));
 
 		_synapseManager.Dispose();
 
 		_cancellation.Dispose();
 	}
 
-	private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string description, bool throwOnTimeout = true)
+	private static bool WaitUntil(Func<bool> condition, TimeSpan timeout)
 	{
-		DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout);
+		long startedTimestamp = Stopwatch.GetTimestamp();
 
-		while (DateTimeOffset.UtcNow < deadline)
+		while (Stopwatch.GetElapsedTime(startedTimestamp) < timeout)
 		{
-			if (condition()) return;
+			if (condition()) return true;
 
-			await Task.Delay(TimeSpan.FromMilliseconds(5));
+			Thread.Sleep(WaitPollInterval);
 		}
 
-		if (condition() || !throwOnTimeout) return;
-
-		throw new TimeoutException($"Timed out after {timeout.TotalSeconds:0.##}s waiting for {description}.");
+		return condition();
 	}
 
 	private bool TryTakeMessage(MessageType messageType, out byte[]? message)
@@ -221,7 +212,7 @@ internal sealed class RelayTestPeer : IDisposable
 		}
 	}
 
-	private async Task PumpAsync()
+	private void Pump()
 	{
 		while (!_cancellation.IsCancellationRequested)
 		{
@@ -230,14 +221,7 @@ internal sealed class RelayTestPeer : IDisposable
 				_synapseManager.Poll();
 			}
 
-			try
-			{
-				await Task.Delay(PumpDelay, _cancellation.Token);
-			}
-			catch (OperationCanceledException)
-			{
-				return;
-			}
+			_cancellation.Token.WaitHandle.WaitOne(PumpInterval);
 		}
 	}
 }

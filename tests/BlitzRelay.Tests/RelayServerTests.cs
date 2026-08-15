@@ -257,9 +257,38 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		output.WriteLine($"relayed in {elapsed.TotalMilliseconds:0} ms with {saturation.OccupiedWorkItems} work items occupying the pool");
 
-		/* Measured on the poll thread: ~50 ms for the two hops. The same relay pacing itself with await Task.Delay on
-		 * the saturated pool took ~680 ms, so this sits well clear of both. */
-		Assert.True(elapsed < TimeSpan.FromMilliseconds(250), $"Relaying took {elapsed.TotalMilliseconds:0} ms while the thread pool was saturated.");
+		/* Measured on the poll thread at a 3 ms interval: ~9 ms for the two hops, which is three 3 ms stages. The same
+		 * relay pacing itself with await Task.Delay on the saturated pool took ~680 ms, so this sits clear of both. */
+		Assert.True(elapsed < TimeSpan.FromMilliseconds(150), $"Relaying took {elapsed.TotalMilliseconds:0} ms while the thread pool was saturated.");
+	}
+
+	// The poll loop owns a thread, so disposal has to end it rather than leave it running against a disposed engine.
+	// The returned task completing is the loop's own report that it left its while loop and ran its finally.
+	[Fact]
+	public void DisposingTheRelayEndsThePollLoopWithoutCancellation()
+	{
+		using CancellationTokenSource neverCancelled = new();
+
+		Server server = new(ReserveUdpPort(), ConnectionKey, new TestOutputLogger<Server>(output));
+
+		Task<int> runTask = server.RunAsync(neverCancelled.Token);
+
+		Thread.Sleep(TimeSpan.FromMilliseconds(250));
+
+		Assert.False(runTask.IsCompleted);
+
+		server.Dispose();
+
+		Assert.True(runTask.Wait(TimeSpan.FromSeconds(5)), "The poll loop was still running after the relay was disposed.");
+	}
+
+	private static int ReserveUdpPort()
+	{
+		using Socket probe = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+
+		probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+
+		return ((IPEndPoint)probe.LocalEndPoint!).Port;
 	}
 
 	private static void AssertClientData(RelayTestPeer client, GameChannel gameChannel, byte[] expectedPayload)
@@ -389,15 +418,6 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 			_server.Dispose();
 
 			_cancellation.Dispose();
-		}
-
-		private static int ReserveUdpPort()
-		{
-			using Socket probe = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-
-			probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-
-			return ((IPEndPoint)probe.LocalEndPoint!).Port;
 		}
 	}
 }

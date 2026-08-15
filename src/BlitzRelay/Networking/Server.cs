@@ -15,7 +15,11 @@ namespace BlitzRelay.Networking;
 
 internal sealed class Server : IDisposable
 {
-	private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(15);
+	// SynapseSocket moves nothing between polls, so this is the relay's forwarding granularity, not a housekeeping
+	// tick. PollWaiter is what makes a figure this small real on Windows.
+	private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(3);
+
+	private static readonly TimeSpan PollThreadShutdownTimeout = TimeSpan.FromSeconds(5);
 
 	private static readonly TimeSpan HostClaimTimeout = TimeSpan.FromSeconds(10);
 
@@ -53,6 +57,11 @@ internal sealed class Server : IDisposable
 
 	private readonly List<PeerConnection> _pendingDisconnects;
 
+	// Stops the poll loop when the relay is disposed without its run token having been cancelled.
+	private readonly CancellationTokenSource _stopSignal;
+
+	private Thread? _pollThread;
+
 	// SynapseSocket is single-threaded: this lock is what keeps the poll loop and the HTTP admin threads off each
 	// other's toes, so every path that reaches the engine has to hold it.
 	private readonly Lock _mutex = new();
@@ -80,6 +89,8 @@ internal sealed class Server : IDisposable
 		_sessionsByConnection = new Dictionary<SynapseConnection, PeerConnection>();
 
 		_pendingDisconnects = [];
+
+		_stopSignal = new CancellationTokenSource();
 
 		_maximumUnreliablePayloadLength = RelayBackpressurePolicy.MaximumUnreliablePayloadLength(MaximumTransmissionUnit);
 
@@ -158,14 +169,16 @@ internal sealed class Server : IDisposable
 		// SynapseSocket only receives, retransmits, acknowledges and times peers out while Poll is running, so the poll
 		// loop cannot share the thread pool with the HTTP API: a pool busy serving requests would delay the poll and
 		// stall the relay itself. It gets a thread of its own instead.
-		Thread pollThread = new(() => RunPollLoop(cancellationToken, completion))
+		_pollThread = new Thread(() => RunPollLoop(cancellationToken, completion))
 		{
+			// Background, so a relay that is torn down without its token being cancelled can never hold the process
+			// open. Dispose still stops and joins it, so shutdown is orderly rather than merely survivable.
 			IsBackground = true,
 
 			Name = "BlitzRelay-Poll",
 		};
 
-		pollThread.Start();
+		_pollThread.Start();
 
 		return completion.Task;
 	}
@@ -306,6 +319,14 @@ internal sealed class Server : IDisposable
 
 		_disposed = true;
 
+		// Stopped and joined before the lock is taken, both because the loop takes that same lock every poll and would
+		// deadlock against a Dispose holding it, and so the engine is never disposed out from under a running poll.
+		_stopSignal.Cancel();
+
+		_pollThread?.Join(PollThreadShutdownTimeout);
+
+		_pollThread = null;
+
 		lock (_mutex)
 		{
 			UnsubscribeFromTransport();
@@ -316,6 +337,8 @@ internal sealed class Server : IDisposable
 
 			_pendingDisconnects.Clear();
 		}
+
+		_stopSignal.Dispose();
 	}
 
 	// Binds dual-stack so IPv4 and IPv6 peers share one socket, falling back to IPv4 where the host has no IPv6 stack.
@@ -358,17 +381,20 @@ internal sealed class Server : IDisposable
 	// the cancellation handle so a stop is picked up immediately without involving the thread pool.
 	private void RunPollLoop(CancellationToken cancellationToken, TaskCompletionSource<int> completion)
 	{
+		// Either the caller's token or a disposal ends the loop.
+		using CancellationTokenSource loopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopSignal.Token);
+
+		using PollWaiter pollWaiter = new(loopCancellation.Token);
+
 		try
 		{
-			while (!cancellationToken.IsCancellationRequested)
+			while (!loopCancellation.IsCancellationRequested)
 			{
 				long pollStartedTimestamp = Stopwatch.GetTimestamp();
 
 				Poll();
 
-				TimeSpan remaining = PollInterval - Stopwatch.GetElapsedTime(pollStartedTimestamp);
-
-				if (remaining > TimeSpan.Zero) cancellationToken.WaitHandle.WaitOne(remaining);
+				pollWaiter.Wait(PollInterval - Stopwatch.GetElapsedTime(pollStartedTimestamp));
 			}
 
 			completion.TrySetResult(0);

@@ -7,6 +7,7 @@ namespace BlitzRelay.Protocol;
 [PublicAPI]
 public static class MessageCodec
 {
+	private const int AuthenticateHeaderSize = 3;
 	private const int HostRegisterHeaderSize = 3;
 	private const int ClientJoinHeaderSize = 3;
 	private const int RoomCreatedHeaderSize = 4;
@@ -35,6 +36,8 @@ public static class MessageCodec
 
 	private static readonly byte[] InvalidMaximumClientsErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.InvalidMaximumClients];
 
+	private static readonly byte[] InvalidConnectionKeyErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.InvalidConnectionKey];
+
 	private static readonly byte[] UnknownErrorMessage = [(byte)MessageType.Error, (byte)ErrorCode.Unknown];
 
 	public const int HostDataHeaderSize = 6;
@@ -44,8 +47,6 @@ public static class MessageCodec
 	public const int MaxRelayHeaderSize = HostDataHeaderSize;
 
 	public const int BroadcastVirtualClientId = -1;
-
-	public const byte RelayWireChannel = 0;
 
 	public static bool TryReadMessageType(ReadOnlySpan<byte> payload, out MessageType messageType)
 	{
@@ -61,6 +62,57 @@ public static class MessageCodec
 	public static MessageType ReadMessageType(ReadOnlySpan<byte> payload)
 	{
 		return (MessageType)payload[0];
+	}
+
+	public static int WriteAuthenticate(Span<byte> destination, string connectionKey)
+	{
+		int connectionKeyByteCount = Encoding.UTF8.GetByteCount(connectionKey);
+
+		return WriteAuthenticate(destination, connectionKey, connectionKeyByteCount);
+	}
+
+	public static byte[] CreateAuthenticate(string connectionKey)
+	{
+		int connectionKeyByteCount = Encoding.UTF8.GetByteCount(connectionKey);
+
+		byte[] payload = new byte[AuthenticateHeaderSize + connectionKeyByteCount];
+
+		WriteAuthenticate(payload, connectionKey, connectionKeyByteCount);
+
+		return payload;
+	}
+
+	public static bool TryReadAuthenticate(ReadOnlySpan<byte> payload, out string connectionKey)
+	{
+		connectionKey = string.Empty;
+
+		if (!TryReadAuthenticateSpan(payload, out ReadOnlySpan<byte> connectionKeySpan)) return false;
+
+		connectionKey = Encoding.UTF8.GetString(connectionKeySpan);
+
+		return true;
+	}
+
+	public static bool TryReadAuthenticateSpan(ReadOnlySpan<byte> payload, out ReadOnlySpan<byte> connectionKey)
+	{
+		connectionKey = ReadOnlySpan<byte>.Empty;
+
+		if (payload.Length < AuthenticateHeaderSize || payload[0] != (byte)MessageType.Authenticate) return false;
+
+		ushort connectionKeyLength = BinaryPrimitives.ReadUInt16LittleEndian(payload[1..3]);
+
+		if (payload.Length < AuthenticateHeaderSize + connectionKeyLength) return false;
+
+		connectionKey = payload.Slice(AuthenticateHeaderSize, connectionKeyLength);
+
+		return true;
+	}
+
+	public static string ReadAuthenticate(ReadOnlySpan<byte> payload)
+	{
+		ushort connectionKeyLength = BinaryPrimitives.ReadUInt16LittleEndian(payload[1..3]);
+
+		return ReadString(payload, AuthenticateHeaderSize, connectionKeyLength);
 	}
 
 	public static int WriteHostRegister(Span<byte> destination, int maximumClients)
@@ -375,6 +427,24 @@ public static class MessageCodec
 		payloadLength = totalLength - HostDataHeaderSize;
 	}
 
+	// A client frame is HostDataHeaderSize - ClientDataHeaderSize bytes shorter than the host frame that produced it,
+	// so it already fits inside the tail of the host frame. Writing the client header directly in front of the game
+	// payload turns one into the other without copying the payload.
+	internal static ArraySegment<byte> RewriteHostDataAsClientData(ArraySegment<byte> hostData, byte gameChannel)
+	{
+		const int HeaderSizeDifference = HostDataHeaderSize - ClientDataHeaderSize;
+
+		byte[] payload = hostData.Array!;
+
+		int offset = hostData.Offset + HeaderSizeDifference;
+
+		payload[offset] = (byte)MessageType.Data;
+
+		payload[offset + 1] = gameChannel;
+
+		return new ArraySegment<byte>(payload, offset, hostData.Count - HeaderSizeDifference);
+	}
+
 	public static int WriteClientData(Span<byte> destination, byte gameChannel, ReadOnlySpan<byte> gamePayload)
 	{
 		int payloadLength = ClientDataHeaderSize + gamePayload.Length;
@@ -543,7 +613,7 @@ public static class MessageCodec
 		return payload;
 	}
 
-	internal static ReadOnlySpan<byte> GetJoinSuccessMessage()
+	internal static byte[] GetJoinSuccessMessage()
 	{
 		return JoinSuccessMessage;
 	}
@@ -628,7 +698,7 @@ public static class MessageCodec
 		return CreateEmptyMessage(MessageType.HostUnavailable);
 	}
 
-	internal static ReadOnlySpan<byte> GetHostUnavailableMessage()
+	internal static byte[] GetHostUnavailableMessage()
 	{
 		return HostUnavailableMessage;
 	}
@@ -653,7 +723,7 @@ public static class MessageCodec
 		return CreateEmptyMessage(MessageType.HostAvailable);
 	}
 
-	internal static ReadOnlySpan<byte> GetHostAvailableMessage()
+	internal static byte[] GetHostAvailableMessage()
 	{
 		return HostAvailableMessage;
 	}
@@ -688,9 +758,9 @@ public static class MessageCodec
 		return payload;
 	}
 
-	internal static ReadOnlySpan<byte> GetErrorMessage(ErrorCode errorCode)
+	internal static byte[] GetErrorMessage(ErrorCode errorCode)
 	{
-		byte[] payload = errorCode switch
+		return errorCode switch
 		{
 			ErrorCode.RoomNotFound => RoomNotFoundErrorMessage,
 
@@ -704,12 +774,12 @@ public static class MessageCodec
 
 			ErrorCode.InvalidMaximumClients => InvalidMaximumClientsErrorMessage,
 
+			ErrorCode.InvalidConnectionKey => InvalidConnectionKeyErrorMessage,
+
 			ErrorCode.Unknown => UnknownErrorMessage,
 
 			_ => CreateError(errorCode),
 		};
-
-		return payload;
 	}
 
 	public static bool TryReadError(ReadOnlySpan<byte> payload, out ErrorCode errorCode)
@@ -740,6 +810,21 @@ public static class MessageCodec
 		WriteVirtualClientMessage(payload, messageType, virtualClientId);
 
 		return payload;
+	}
+
+	private static int WriteAuthenticate(Span<byte> destination, string connectionKey, int connectionKeyByteCount)
+	{
+		int payloadLength = AuthenticateHeaderSize + connectionKeyByteCount;
+
+		EnsureDestinationSize(destination, payloadLength);
+
+		destination[0] = (byte)MessageType.Authenticate;
+
+		BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(1, 2), checked((ushort)connectionKeyByteCount));
+
+		Encoding.UTF8.GetBytes(connectionKey.AsSpan(), destination.Slice(AuthenticateHeaderSize, connectionKeyByteCount));
+
+		return payloadLength;
 	}
 
 	private static int WriteClientJoin(Span<byte> destination, string roomCode, int roomCodeByteCount)

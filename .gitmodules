@@ -1,0 +1,3 @@
+[submodule "submodules/SynapseSocket"]
+	path = submodules/SynapseSocket
+	url = https://github.com/FirstGearGames/SynapseSocket.git

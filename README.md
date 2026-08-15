@@ -14,6 +14,9 @@ relay between game clients, supporting both reliable and unreliable delivery mod
   disconnects.
 - **Dual Protocol Support**: UDP for low-latency game traffic relay, HTTP for administrative room management.
 - **Configurable Delivery**: Game data can be sent reliably or unreliably via separate channels.
+- **Hardened UDP Transport**: [SynapseSocket](https://github.com/FirstGearGames/SynapseSocket) provides the reliable and
+  unreliable channels, payload segmentation, and a security pipeline that rate-limits, drops, and blacklists abusive
+  peers before their payloads are ever copied.
 - **Simple Client Integration**: A minimal binary protocol using the `BlitzRelay.Protocol` library.
 - **AOT Published**: The server is compiled ahead-of-time for fast startup and minimal memory usage.
 
@@ -35,6 +38,14 @@ The server consists of two main components:
 
 Download the latest release from the [releases page](https://github.com/abdelfattahradwan/blitz-relay/releases) or build
 from source.
+
+The UDP transport is consumed as a git submodule, so a source build needs it checked out:
+
+```bash
+git clone --recurse-submodules <repository-url>
+```
+
+If the repository is already cloned, run `git submodule update --init --recursive` once before building.
 
 ## Usage
 
@@ -181,26 +192,46 @@ the [Redoc documentation](docs/relay-http-api/redoc-static.html).
 
 ### Client Integration
 
-Clients use the `BlitzRelay.Protocol` library to communicate with the relay server:
+Clients talk to the relay over [SynapseSocket](https://github.com/FirstGearGames/SynapseSocket) and frame their messages
+with the `BlitzRelay.Protocol` library:
 
-1. Connect to the relay using the UDP port and connection key.
-2. To host: send a `HostRegister` message with the maximum number of clients.
-3. To join: send a `ClientJoin` message with the room code.
-4. Send game data using `HostData` (from host) or `ClientData` (from clients).
-5. Handle incoming `Connected`, `Disconnected`, and `Data` messages.
+1. Connect a `SynapseManager` to the relay's UDP port.
+2. Send an `Authenticate` message carrying the connection key, reliably, as the very first message. The relay answers
+   silence on success, an `Error` with `InvalidConnectionKey` on failure, and ignores every other message until a peer
+   has authenticated. A peer that has not authenticated within ten seconds is disconnected.
+3. To host: send a `HostRegister` message with the maximum number of clients.
+4. To join: send a `ClientJoin` message with the room code.
+5. Send game data using `HostData` (from host) or `ClientData` (from clients). Send a message on the SynapseSocket
+   channel that matches its `GameChannel`: reliable game data on the reliable channel, unreliable on the unreliable one.
+   The relay drops any message whose declared channel disagrees with the channel it arrived on.
+6. Handle incoming `Connected`, `Disconnected`, and `Data` messages.
+
+Because `Authenticate` and the message that follows it are both reliable and therefore ordered, a client can send them
+back to back without waiting in between.
 
 See the `BlitzRelay.Protocol` library for the full message codec API.
 
+### Transport Limits
+
+| Limit                       | Value                | Notes                                                            |
+|-----------------------------|----------------------|------------------------------------------------------------------|
+| MTU                         | 1200 bytes           | Payloads above this are segmented on the reliable channel        |
+| Maximum datagram            | 1400 bytes           | A larger datagram raises an oversized violation                  |
+| Maximum unreliable payload  | 1197 bytes           | Unreliable game data is never segmented; larger payloads are dropped |
+| Maximum reliable payload    | 64 KB                | Larger payloads are rejected rather than relayed                 |
+| Rate limit                  | 2000 packets/second, 4 MB/second | Per peer; a peer over the limit is dropped and blacklisted |
+| Keep-alive / timeout        | 2 s / 30 s           | An idle peer is disconnected after the timeout                   |
+
 ## Configuration Reference
 
-| Environment Variable           | Description                                         |
-|--------------------------------|-----------------------------------------------------|
-| `BLITZ_RELAY_CONNECTION_KEY`   | Key used to authenticate UDP connections (required) |
-| `BLITZ_RELAY_HTTP_ADMIN_TOKEN` | Token for HTTP admin API authentication (required)  |
+| Environment Variable           | Description                                                       |
+|--------------------------------|-------------------------------------------------------------------|
+| `BLITZ_RELAY_CONNECTION_KEY`   | Key each UDP peer presents in its `Authenticate` message (required) |
+| `BLITZ_RELAY_HTTP_ADMIN_TOKEN` | Token for HTTP admin API authentication (required)                |
 
 ## Acknowledgements
 
-Blitz Relay uses [LiteNetLib](https://github.com/RevenantX/LiteNetLib) by RevenantX for UDP networking.
+Blitz Relay uses [SynapseSocket](https://github.com/FirstGearGames/SynapseSocket) by FirstGearGames for UDP networking.
 
 ## License
 

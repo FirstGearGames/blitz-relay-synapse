@@ -32,4 +32,6 @@ public enum MessageType : byte
 	HostAvailable = 0x0D,
 
 	HostPromotionAck = 0x0E,
+
+	Authenticate = 0x0F,
 }

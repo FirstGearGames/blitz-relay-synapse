@@ -17,5 +17,7 @@ public enum ErrorCode : byte
 
 	InvalidMaximumClients = 0x06,
 
+	InvalidConnectionKey = 0x07,
+
 	Unknown = 0xFF,
 }

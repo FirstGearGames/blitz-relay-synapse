@@ -42,6 +42,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v5.2.0
         with:
@@ -55,6 +57,21 @@ jobs:
         with:
           name: BlitzRelay-${{ matrix.rid }}-${{ matrix.flavour }}
           path: src/BlitzRelay/bin/Release/net10.0/${{ matrix.rid }}/publish/
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5.2.0
+        with:
+          dotnet-version: '10.x'
+
+      - name: Test BlitzRelay
+        run: dotnet test tests/BlitzRelay.Tests/BlitzRelay.Tests.csproj -c Release
 
   build-protocol:
     runs-on: ubuntu-latest
@@ -76,7 +93,7 @@ jobs:
           path: src/BlitzRelay.Protocol/bin/Release/netstandard2.1/
 
   release:
-    needs: [ build-relay, build-protocol ]
+    needs: [ test, build-relay, build-protocol ]
     runs-on: ubuntu-latest
     permissions:
       contents: write

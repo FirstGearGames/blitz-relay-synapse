@@ -1,11 +1,17 @@
-﻿using LiteNetLib;
 using BlitzRelay.Rooms;
+using SynapseSocket.Connections;
 
 namespace BlitzRelay.Networking;
 
-internal sealed class PeerConnection(NetPeer peer)
+internal sealed class PeerConnection(SynapseConnection connection)
 {
-	public NetPeer Peer { get; } = peer;
+	public SynapseConnection Connection { get; } = connection;
+
+	public bool IsConnected { get; set; } = true;
+
+	public bool IsAuthenticated { get; set; }
+
+	public DateTimeOffset AuthenticationDeadlineUtc { get; set; }
 
 	public PeerRole Role { get; set; }
 
@@ -15,9 +21,14 @@ internal sealed class PeerConnection(NetPeer peer)
 
 	public long RoomJoinOrder { get; set; }
 
+	public ulong Signature
+	{
+		get => Connection.Signature;
+	}
+
 	public string Endpoint
 	{
-		get => $"{Peer.Address}:{Peer.Port}";
+		get => Connection.RemoteEndPoint.ToString();
 	}
 
 	public void Clear()

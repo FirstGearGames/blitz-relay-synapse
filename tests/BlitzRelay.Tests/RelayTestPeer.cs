@@ -1,4 +1,3 @@
-using BlitzRelay.Networking;
 using BlitzRelay.Protocol;
 using SynapseSocket.Connections;
 using SynapseSocket.Core;
@@ -13,9 +12,9 @@ namespace BlitzRelay.Tests;
 // so a test can saturate the thread pool without stalling the peer that is supposed to be measuring the relay.
 internal sealed class RelayTestPeer : IDisposable
 {
-	private static readonly TimeSpan PumpInterval = TimeSpan.FromMilliseconds(3);
+	private static readonly TimeSpan PumpInterval = TimeSpan.FromMilliseconds(5);
 
-	private static readonly TimeSpan WaitPollInterval = TimeSpan.FromMilliseconds(3);
+	private static readonly TimeSpan WaitPollInterval = TimeSpan.FromMilliseconds(5);
 
 	private readonly SynapseManager _synapseManager;
 
@@ -26,10 +25,6 @@ internal sealed class RelayTestPeer : IDisposable
 	private readonly Lock _mutex = new();
 
 	private readonly List<byte[]> _receivedMessages;
-
-	// Thread.Sleep rounds to the same 15.6ms Windows tick the pump avoids, which would quantize every measurement this
-	// peer takes, so the waits poll on the high-resolution waiter too.
-	private readonly PollWaiter _waitPollWaiter;
 
 	private SynapseConnection? _connection;
 
@@ -72,8 +67,6 @@ internal sealed class RelayTestPeer : IDisposable
 		_receivedMessages = [];
 
 		_cancellation = new CancellationTokenSource();
-
-		_waitPollWaiter = new PollWaiter(_cancellation.Token);
 
 		_synapseManager = new SynapseManager(synapseConfig);
 
@@ -171,12 +164,10 @@ internal sealed class RelayTestPeer : IDisposable
 
 		_synapseManager.Dispose();
 
-		_waitPollWaiter.Dispose();
-
 		_cancellation.Dispose();
 	}
 
-	private bool WaitUntil(Func<bool> condition, TimeSpan timeout)
+	private static bool WaitUntil(Func<bool> condition, TimeSpan timeout)
 	{
 		long startedTimestamp = Stopwatch.GetTimestamp();
 
@@ -184,7 +175,7 @@ internal sealed class RelayTestPeer : IDisposable
 		{
 			if (condition()) return true;
 
-			_waitPollWaiter.Wait(WaitPollInterval);
+			Thread.Sleep(WaitPollInterval);
 		}
 
 		return condition();
@@ -221,12 +212,8 @@ internal sealed class RelayTestPeer : IDisposable
 		}
 	}
 
-	// Uses the relay's own waiter so the peer is not the slow stage: a plain wait would round this pump up to the
-	// 15.6ms Windows tick and the harness, rather than the relay, would set the latency being measured.
 	private void Pump()
 	{
-		using PollWaiter pollWaiter = new(_cancellation.Token);
-
 		while (!_cancellation.IsCancellationRequested)
 		{
 			lock (_mutex)
@@ -234,7 +221,7 @@ internal sealed class RelayTestPeer : IDisposable
 				_synapseManager.Poll();
 			}
 
-			pollWaiter.Wait(PumpInterval);
+			_cancellation.Token.WaitHandle.WaitOne(PumpInterval);
 		}
 	}
 }

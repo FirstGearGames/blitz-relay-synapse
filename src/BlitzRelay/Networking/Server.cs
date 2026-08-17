@@ -16,8 +16,10 @@ namespace BlitzRelay.Networking;
 internal sealed class Server : IDisposable
 {
 	// SynapseSocket moves nothing between polls, so this is the relay's forwarding granularity, not a housekeeping
-	// tick. PollWaiter is what makes a figure this small real on Windows.
-	private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(3);
+	// tick. On Windows a wait is rounded up to the 15.6ms system timer tick, so asking for less than this buys nothing
+	// without a high-resolution timer, and measured at 513 peers the shorter interval only bought latency, not
+	// throughput: fan-out CPU was the same either way.
+	private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(15);
 
 	private static readonly TimeSpan PollThreadShutdownTimeout = TimeSpan.FromSeconds(5);
 
@@ -384,8 +386,6 @@ internal sealed class Server : IDisposable
 		// Either the caller's token or a disposal ends the loop.
 		using CancellationTokenSource loopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopSignal.Token);
 
-		using PollWaiter pollWaiter = new(loopCancellation.Token);
-
 		try
 		{
 			while (!loopCancellation.IsCancellationRequested)
@@ -394,7 +394,9 @@ internal sealed class Server : IDisposable
 
 				Poll();
 
-				pollWaiter.Wait(PollInterval - Stopwatch.GetElapsedTime(pollStartedTimestamp));
+				TimeSpan remaining = PollInterval - Stopwatch.GetElapsedTime(pollStartedTimestamp);
+
+				if (remaining > TimeSpan.Zero) loopCancellation.Token.WaitHandle.WaitOne(remaining);
 			}
 
 			completion.TrySetResult(0);

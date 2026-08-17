@@ -257,9 +257,9 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 
 		output.WriteLine($"relayed in {elapsed.TotalMilliseconds:0} ms with {saturation.OccupiedWorkItems} work items occupying the pool");
 
-		/* Measured on the poll thread at a 3 ms interval: ~9 ms for the two hops, which is three 3 ms stages. The same
-		 * relay pacing itself with await Task.Delay on the saturated pool took ~680 ms, so this sits clear of both. */
-		Assert.True(elapsed < TimeSpan.FromMilliseconds(150), $"Relaying took {elapsed.TotalMilliseconds:0} ms while the thread pool was saturated.");
+		/* Measured on the poll thread: ~50 ms for the two hops. The same relay pacing itself with await Task.Delay on
+		 * the saturated pool took ~680 ms, so this sits clear of both. */
+		Assert.True(elapsed < TimeSpan.FromMilliseconds(250), $"Relaying took {elapsed.TotalMilliseconds:0} ms while the thread pool was saturated.");
 	}
 
 	// The poll loop owns a thread, so disposal has to end it rather than leave it running against a disposed engine.

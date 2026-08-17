@@ -3,7 +3,7 @@ using Xunit.Abstractions;
 
 namespace BlitzRelay.Tests;
 
-internal sealed class TestOutputLogger<T0>(ITestOutputHelper output) : ILogger<T0>
+internal sealed class TestOutputLogger<T0>(ITestOutputHelper output, LogLevel minimumLevel = LogLevel.Debug) : ILogger<T0>
 {
 	public IDisposable? BeginScope<TState>(TState state) where TState : notnull
 	{
@@ -12,7 +12,7 @@ internal sealed class TestOutputLogger<T0>(ITestOutputHelper output) : ILogger<T
 
 	public bool IsEnabled(LogLevel logLevel)
 	{
-		return logLevel >= LogLevel.Debug;
+		return logLevel >= minimumLevel;
 	}
 
 	public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)

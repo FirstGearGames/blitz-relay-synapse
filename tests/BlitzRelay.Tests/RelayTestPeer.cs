@@ -20,7 +20,8 @@ internal sealed class RelayTestPeer : IDisposable
 
 	private readonly CancellationTokenSource _cancellation;
 
-	private readonly Thread _pumpThread;
+	// Null when the caller pumps this peer itself, which is how a test can run hundreds of peers without a thread each.
+	private readonly Thread? _pumpThread;
 
 	private readonly Lock _mutex = new();
 
@@ -32,12 +33,23 @@ internal sealed class RelayTestPeer : IDisposable
 
 	private volatile bool _isClosed;
 
+	private int _dataMessageCount;
+
 	public bool IsClosed
 	{
 		get => _isClosed;
 	}
 
-	public RelayTestPeer()
+	// Set on a peer that is only there to make up the numbers: it tallies Data messages instead of retaining them, so a
+	// long broadcast run cannot grow its list without bound.
+	public bool CountDataOnly { get; set; }
+
+	public int DataMessageCount
+	{
+		get => Volatile.Read(ref _dataMessageCount);
+	}
+
+	public RelayTestPeer(bool ownsPumpThread = true)
 	{
 		SynapseConfig synapseConfig = new()
 		{
@@ -78,6 +90,8 @@ internal sealed class RelayTestPeer : IDisposable
 
 		_synapseManager.Start();
 
+		if (!ownsPumpThread) return;
+
 		_pumpThread = new Thread(Pump)
 		{
 			IsBackground = true,
@@ -86,6 +100,23 @@ internal sealed class RelayTestPeer : IDisposable
 		};
 
 		_pumpThread.Start();
+	}
+
+	// For a peer the caller pumps itself, in place of the pump thread.
+	public void Poll()
+	{
+		lock (_mutex)
+		{
+			_synapseManager.Poll();
+		}
+	}
+
+	public void ClearReceived()
+	{
+		lock (_mutex)
+		{
+			_receivedMessages.Clear();
+		}
 	}
 
 	// A handshake is a single unacknowledged datagram, so a peer that hears nothing back sends another one.
@@ -160,7 +191,7 @@ internal sealed class RelayTestPeer : IDisposable
 	{
 		_cancellation.Cancel();
 
-		_pumpThread.Join(TimeSpan.FromSeconds(5));
+		_pumpThread?.Join(TimeSpan.FromSeconds(5));
 
 		_synapseManager.Dispose();
 
@@ -205,6 +236,13 @@ internal sealed class RelayTestPeer : IDisposable
 	private void HandlePacketReceived(SynapseSocket.Core.Events.PacketReceivedEventArgs packetReceivedEventArgs)
 	{
 		if (packetReceivedEventArgs.Payload.Count == 0) return;
+
+		if (CountDataOnly && packetReceivedEventArgs.Payload[0] == (byte)MessageType.Data)
+		{
+			Interlocked.Increment(ref _dataMessageCount);
+
+			return;
+		}
 
 		lock (_mutex)
 		{

@@ -128,10 +128,13 @@ public sealed class RelaySoakTests(ITestOutputHelper output)
 
 			byte[] heartbeatPayload = new byte[16];
 
-			/* Real clients send input, and they have to: SynapseSocket schedules a peer's keep-alive off the traffic it
-			 * receives, so a client that only listens transmits nothing and the relay times it out. Each client sends
-			 * once every HeartbeatSeconds, spread across ticks so the upstream is a trickle rather than a burst. */
-			int heartbeatsPerTick = Math.Max(1, (int)Math.Ceiling(backgroundClients.Count / (HeartbeatSeconds * (double)BroadcastHertz)));
+			/* Real clients send input, and a client that never sends is worth testing on purpose: keep-alive scheduling
+			 * decides whether a listen-only peer survives at all. Each sending client sends once every heartbeatSeconds,
+			 * spread across ticks so the upstream is a trickle rather than a burst. Set BLITZ_RELAY_SOAK_HEARTBEAT_SECONDS
+			 * to 0 for a room of pure listeners. */
+			int heartbeatSeconds = ReadSetting("BLITZ_RELAY_SOAK_HEARTBEAT_SECONDS", HeartbeatSeconds);
+
+			int heartbeatsPerTick = heartbeatSeconds == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(backgroundClients.Count / (heartbeatSeconds * (double)BroadcastHertz)));
 
 			int nextHeartbeatClient = 0;
 

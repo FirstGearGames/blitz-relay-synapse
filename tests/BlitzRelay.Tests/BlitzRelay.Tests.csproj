@@ -17,6 +17,13 @@
         <ProjectReference Include="..\..\src\BlitzRelay\BlitzRelay.csproj" />
     </ItemGroup>
 
+    <!-- Newfarm is a separate repository, checked out alongside this one. Only the migration tests use it, and only
+         from the test project: nothing the relay ships knows newfarm exists, and nothing in newfarm knows about the
+         relay either. -->
+    <ItemGroup>
+        <ProjectReference Include="..\..\..\..\Newfarm\Newfarm\Newfarm.csproj" />
+    </ItemGroup>
+
     <ItemGroup>
         <Using Include="Xunit" />
     </ItemGroup>

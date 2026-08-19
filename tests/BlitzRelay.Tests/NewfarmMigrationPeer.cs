@@ -27,7 +27,7 @@ internal sealed class NewfarmMigrationPeer : IDisposable
 
 	public NewfarmCredential? Credential { get; private set; }
 
-	public List<NewfarmPacketType> Refusals { get; } = [];
+	public List<NewfarmRefusalReason> Refusals { get; } = [];
 
 	private readonly TimeSpan _waitTimeout;
 
@@ -66,7 +66,7 @@ internal sealed class NewfarmMigrationPeer : IDisposable
 	// The room code the peer was last told the session lives at.
 	public string CredentialRoomCode
 	{
-		get => Credential is null ? string.Empty : Encoding.UTF8.GetString(Credential.Value.Credential);
+		get => Credential is null ? string.Empty : Credential.Value.Credential;
 	}
 
 	public void ConnectToRelay(int relayPort, string connectionKey)

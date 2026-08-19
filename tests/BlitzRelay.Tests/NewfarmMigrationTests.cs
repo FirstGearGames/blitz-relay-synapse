@@ -52,7 +52,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		string firstRoomCode = host.CreateRoom(maximumClients: 8);
 
-		host.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(firstRoomCode));
+		host.Directory.PublishCredential(AdapterTag, firstRoomCode);
 
 		/* Clients join that room. The identity reaches them over the game connection, which is milestone 3's job; here
 		   it is handed over directly, since what is under test is what they do with it afterwards. */
@@ -118,7 +118,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		Assert.NotEqual(firstRoomCode, secondRoomCode);
 
-		electedClient.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(secondRoomCode));
+		electedClient.Directory.PublishCredential(AdapterTag, secondRoomCode);
 
 		/* Every other survivor is told where the session moved to, and goes there. */
 
@@ -160,7 +160,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		host.Directory.StartHosting(identity);
 
-		host.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(strandedRoomCode));
+		host.Directory.PublishCredential(AdapterTag, strandedRoomCode);
 
 		PumpFor(TimeSpan.FromMilliseconds(600), everyone);
 
@@ -212,7 +212,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		string firstRoomCode = host.CreateRoom(maximumClients: 4);
 
-		host.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(firstRoomCode));
+		host.Directory.PublishCredential(AdapterTag, firstRoomCode);
 
 		successor.ConnectToRelay(relay.Port, ConnectionKey);
 
@@ -240,7 +240,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		Assert.NotEqual(firstRoomCode, secondRoomCode);
 
-		successor.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(secondRoomCode));
+		successor.Directory.PublishCredential(AdapterTag, secondRoomCode);
 
 		/* The peer that gave the session up is still in it, and is told where it went like anyone else. */
 
@@ -293,7 +293,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		string firstRoomCode = host.CreateRoom(maximumClients: 4);
 
-		host.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(firstRoomCode));
+		host.Directory.PublishCredential(AdapterTag, firstRoomCode);
 
 		strandedClient.ConnectToRelay(relay.Port, ConnectionKey);
 
@@ -331,7 +331,7 @@ public sealed class NewfarmMigrationTests(ITestOutputHelper output)
 
 		Assert.NotEqual(firstRoomCode, secondRoomCode);
 
-		strandedClient.Directory.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes(secondRoomCode));
+		strandedClient.Directory.PublishCredential(AdapterTag, secondRoomCode);
 
 		PumpUntil(() => host.Credential is not null, WaitTimeout, "the stood-down host to be told where the session went", everyone);
 

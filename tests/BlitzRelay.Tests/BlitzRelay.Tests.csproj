@@ -24,6 +24,17 @@
         <ProjectReference Include="..\..\..\..\Newfarm\Newfarm\Newfarm.csproj" />
     </ItemGroup>
 
+    <!-- The engine and its relay integration, also checked out beside this repository. Referenced so the transport can be
+         driven against a real relay, which is the only place both halves exist at once. -->
+    <ItemGroup>
+        <ProjectReference Include="..\..\..\..\Nucleus\Nucleus\Nucleus.csproj" Aliases="nucleus" />
+        <ProjectReference Include="..\..\..\..\Nucleus\Nucleus.Integrations.BlitzRelay\Nucleus.Integrations.BlitzRelay.csproj" Aliases="nucleus" />
+        <!-- The relay compiles the protocol sources into itself, so those types exist in both assemblies and the integration
+             brings the second one in behind it. Aliased so the plain names keep meaning the relay's own copy, as they did
+             before this project ever saw the integration. -->
+        <ProjectReference Include="..\..\src\BlitzRelay.Protocol\BlitzRelay.Protocol.csproj" Aliases="protocol" />
+    </ItemGroup>
+
     <ItemGroup>
         <Using Include="Xunit" />
     </ItemGroup>

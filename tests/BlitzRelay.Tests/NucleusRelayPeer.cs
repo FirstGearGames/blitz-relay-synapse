@@ -1,21 +1,26 @@
 extern alias nucleus;
 
 using System.Net;
+using nucleus::Nucleus.Components;
 using nucleus::Nucleus.Connections;
 using nucleus::Nucleus.Integrations.BlitzRelay;
 using nucleus::Nucleus.Managers.Core;
 using nucleus::Nucleus.Managers.NetworkLoop;
 using nucleus::Nucleus.Managers.Transports;
+using nucleus::Nucleus.Systems;
 using nucleus::Nucleus.Transports;
 
 namespace BlitzRelay.Tests;
 
 // One engine instance carried by the relay transport, driven by hand so a test decides exactly when a tick happens.
-internal sealed class NucleusRelayPeer
+internal sealed class NucleusRelayPeer : IDisposable
 {
 	public CoreManager CoreManager { get; }
 
 	public RelayTransport Transport { get; private set; } = null!;
+
+	// Null on a peer created without a directory, which is every test that is not about a handover.
+	public RelayHostMigration Migration { get; private set; } = null!;
 
 	public string RoomCode
 	{
@@ -29,7 +34,7 @@ internal sealed class NucleusRelayPeer
 		CoreManager.NetworkLoopManager.RegisterNetworkLoopStepCallbacks(new StepGate());
 	}
 
-	public static async Task<NucleusRelayPeer> CreateAsync(int relayPort, string connectionKey)
+	public static async Task<NucleusRelayPeer> CreateAsync(int relayPort, string connectionKey, int directoryPort = 0)
 	{
 		NucleusRelayPeer peer = new();
 
@@ -37,14 +42,68 @@ internal sealed class NucleusRelayPeer
 		peer.Transport.RelayEndPoint = new IPEndPoint(IPAddress.Loopback, relayPort);
 		peer.Transport.ConnectionKey = connectionKey;
 
+		if (directoryPort != 0)
+			peer.Migration = new RelayHostMigration(peer.CoreManager, peer.Transport, new IPEndPoint(IPAddress.Loopback, directoryPort));
+
 		return peer;
 	}
 
-	// Runs one tick of the engine, which is where the transport is polled and received packets are handled.
+	// Asks for an object this peer serves. A start is finished by the loop rather than by this call, so on a freshly promoted
+	// authority the object comes back in Starting with no id yet, and the caller drives until it has one.
+	public NetworkSystem SpawnObject(uint platformId)
+	{
+		NetworkSystem networkSystem = NetworkSystemPool.Rent<NetworkSystem, TransformComponent>(CoreManager, startSystem: false)!;
+
+		Assert.True(CoreManager.SystemManager.EnsureStartSystem(networkSystem, platformId, isSceneObject: false), "The engine would not start an object.");
+
+		return networkSystem;
+	}
+
+	public void DespawnObject(uint systemId)
+	{
+		Assert.True(CoreManager.SystemManager.TryGetSystemReference(systemId, out NetworkSystem networkSystem), $"No object with id [{systemId}] to despawn.");
+		Assert.True(CoreManager.SystemManager.EnsureStopSystem(networkSystem));
+	}
+
+	public bool IsClientConnected
+	{
+		get => Transport.TryGetConnection(Invoker.Client, out Connection connection) && connection.LocalState == LocalConnectionState.Connected;
+	}
+
+	public bool IsServerConnected
+	{
+		get => Transport.TryGetConnection(Invoker.Server, out Connection connection) && connection.LocalState == LocalConnectionState.Connected;
+	}
+
+	public bool HasSystem(uint systemId)
+	{
+		return CoreManager.SystemManager.TryGetSystemReference(systemId, out NetworkSystem networkSystem) && networkSystem.State == NetworkSystemState.Started;
+	}
+
+	public void Dispose()
+	{
+		Migration?.Dispose();
+	}
+
+	// Runs a whole tick of the engine, every step in order. The variable-update steps alone carry a message, but spawning and
+	// replicating an object rides the tick and state steps, so a partial tick moves messages and nothing else.
 	public void Tick()
 	{
-		CoreManager.NetworkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateVariableUpdate, new StepDelta(0, 0, 0));
-		CoreManager.NetworkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyVariableUpdate, new StepDelta(0, 0, 0));
+		NetworkLoopManager networkLoopManager = CoreManager.NetworkLoopManager;
+		StepDelta stepDelta = new(0, 0, 0);
+
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyVariableUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyTickUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyStateUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateStateUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.Reconcile, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyFixedUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateFixedUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.VariableUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyStateWrite, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateStateWrite, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateTickUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateVariableUpdate, stepDelta);
 	}
 
 	public async Task<bool> StartHostingAsync()

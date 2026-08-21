@@ -30,6 +30,8 @@
     <ItemGroup>
         <ProjectReference Include="..\..\..\..\Nucleus\Nucleus\Nucleus.csproj" Aliases="nucleus" />
         <ProjectReference Include="..\..\..\..\Nucleus\Nucleus.Integrations.BlitzRelay\Nucleus.Integrations.BlitzRelay.csproj" Aliases="nucleus" />
+        <!-- The migration coordinator the integration hands an ISessionHost to, in the engine repository beside this one. -->
+        <ProjectReference Include="..\..\..\..\Nucleus\Nucleus.Integrations.Newfarm\Nucleus.Integrations.Newfarm.csproj" Aliases="nucleus" />
         <!-- The relay compiles the protocol sources into itself, so those types exist in both assemblies and the integration
              brings the second one in behind it. Aliased so the plain names keep meaning the relay's own copy, as they did
              before this project ever saw the integration. -->

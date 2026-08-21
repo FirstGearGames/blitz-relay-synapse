@@ -4,6 +4,7 @@ using System.Net;
 using nucleus::Nucleus.Components;
 using nucleus::Nucleus.Connections;
 using nucleus::Nucleus.Integrations.BlitzRelay;
+using nucleus::Nucleus.Integrations.Newfarm;
 using nucleus::Nucleus.Managers.Core;
 using nucleus::Nucleus.Managers.NetworkLoop;
 using nucleus::Nucleus.Managers.Transports;
@@ -20,7 +21,7 @@ internal sealed class NucleusRelayPeer : IDisposable
 	public RelayTransport Transport { get; private set; } = null!;
 
 	// Null on a peer created without a directory, which is every test that is not about a handover.
-	public RelayHostMigration Migration { get; private set; } = null!;
+	public NewfarmHostMigration Migration { get; private set; } = null!;
 
 	public string RoomCode
 	{
@@ -43,7 +44,7 @@ internal sealed class NucleusRelayPeer : IDisposable
 		peer.Transport.ConnectionKey = connectionKey;
 
 		if (directoryPort != 0)
-			peer.Migration = new RelayHostMigration(peer.CoreManager, peer.Transport, new IPEndPoint(IPAddress.Loopback, directoryPort));
+			peer.Migration = new NewfarmHostMigration(peer.CoreManager, new RelaySessionHost(peer.Transport), new IPEndPoint(IPAddress.Loopback, directoryPort));
 
 		return peer;
 	}

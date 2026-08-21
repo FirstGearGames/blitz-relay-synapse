@@ -4,6 +4,7 @@ using System.Diagnostics;
 using nucleus::Nucleus.Components;
 using nucleus::Nucleus.Connections;
 using nucleus::Nucleus.Integrations.BlitzRelay;
+using nucleus::Nucleus.Integrations.Newfarm;
 using nucleus::Nucleus.Managers.Client;
 using nucleus::Nucleus.Systems;
 using nucleus::Nucleus.Transports;
@@ -78,7 +79,7 @@ public sealed class NucleusRelayMigrationTests(ITestOutputHelper output)
 		await firstPeer.ShutdownAsync();
 		firstPeer.Dispose();
 
-		DriveUntil(() => secondPeer.Migration.State == RelayMigrationState.Hosting, WaitTimeout, "the second peer to be elected and start hosting", secondPeer);
+		DriveUntil(() => secondPeer.Migration.State == NewfarmMigrationState.Hosting, WaitTimeout, "the second peer to be elected and start hosting", secondPeer);
 
 		Assert.NotEqual(firstRoomCode, secondPeer.RoomCode);
 
@@ -137,6 +138,91 @@ public sealed class NucleusRelayMigrationTests(ITestOutputHelper output)
 
 		await secondPeer.ShutdownAsync();
 		secondPeer.Dispose();
+	}
+
+	// A peer asking about a session the directory does not hold is told so once and promptly: the refusal ends the ask, the
+	// directory client goes idle rather than heartbeating the dead question, and no second failure is reported over the first.
+	[Fact]
+	public async Task AJoinOfAnUnknownSessionFailsOnceAndFast()
+	{
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		using NewfarmDirectoryFixture newfarm = new();
+
+		NucleusRelayPeer peer = await NucleusRelayPeer.CreateAsync(relay.Port, ConnectionKey, newfarm.Port);
+
+		int abandonedCount = 0;
+		peer.Migration.Abandoned += _ => abandonedCount++;
+
+		long startedTimestamp = Stopwatch.GetTimestamp();
+
+		Task<bool> joinTask = peer.Migration.JoinAsync(0xBAD5E5510BAD5E55);
+
+		DriveUntil(() => joinTask.IsCompleted, WaitTimeout, "the refused join to resolve", peer);
+
+		Assert.False(await joinTask);
+
+		TimeSpan joinDuration = Stopwatch.GetElapsedTime(startedTimestamp);
+		Assert.True(joinDuration < TimeSpan.FromSeconds(5), $"A refused join took [{joinDuration.TotalSeconds:0.##}]s, which is the timeout being waited out rather than the refusal being acted on.");
+		Assert.Equal(1, abandonedCount);
+
+		// Driving on earns nothing further: one bad question, one answer.
+		DriveFor(TimeSpan.FromSeconds(3), peer);
+		Assert.Equal(1, abandonedCount);
+
+		output.WriteLine($"The unknown session was refused once, in [{joinDuration.TotalSeconds:0.##}]s, and stayed refused exactly once.");
+
+		peer.Dispose();
+	}
+
+	// A restarted host holds nothing but its session identifier, and the directory, still holding the session, answers its ask by
+	// electing it. The join must report that as the success it is: the peer is in the session, from the hosting chair, in a fresh
+	// room, rather than failing over its own promotion and opening a second session beside the one it already carries.
+	[Fact]
+	public async Task AReturningHostAskingForItsOwnDeadSessionIsPromotedAndTheJoinSucceeds()
+	{
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		using NewfarmDirectoryFixture newfarm = new();
+
+		NucleusRelayPeer firstLife = await NucleusRelayPeer.CreateAsync(relay.Port, ConnectionKey, newfarm.Port);
+
+		Assert.True(await firstLife.Migration.StartHostingAsync(), "The first life could not start hosting the session.");
+
+		ulong sessionId = firstLife.Migration.SessionId;
+		string firstRoomCode = firstLife.RoomCode;
+
+		// The host dies with the room, exactly as an editor stopping play does; only the identifier survives, in the session file.
+		await firstLife.ShutdownAsync();
+		firstLife.Dispose();
+
+		NucleusRelayPeer secondLife = await NucleusRelayPeer.CreateAsync(relay.Port, ConnectionKey, newfarm.Port);
+
+		int abandonedCount = 0;
+		secondLife.Migration.Abandoned += _ => abandonedCount++;
+
+		string promotedRoomCode = string.Empty;
+		secondLife.Migration.Promoted += roomCode => promotedRoomCode = roomCode;
+
+		Task<bool> joinTask = secondLife.Migration.JoinAsync(sessionId);
+
+		DriveUntil(() => joinTask.IsCompleted, WaitTimeout, "the returning host's join to resolve", secondLife);
+
+		Assert.True(await joinTask, "A join that ended in this peer's own promotion reported failure.");
+		Assert.Equal(NewfarmMigrationState.Hosting, secondLife.Migration.State);
+		Assert.Equal(sessionId, secondLife.Migration.SessionId);
+		Assert.NotEqual(firstRoomCode, secondLife.RoomCode);
+		Assert.Equal(secondLife.RoomCode, promotedRoomCode);
+		Assert.Equal(0, abandonedCount);
+
+		output.WriteLine($"The returning host asked for session [{sessionId:x16}], was elected, and carries it on in room [{secondLife.RoomCode}], which is not the room it died in.");
+
+		await secondLife.ShutdownAsync();
+		secondLife.Dispose();
 	}
 
 	private static void DriveUntil(Func<bool> condition, TimeSpan timeout, string description, params NucleusRelayPeer[] peers)

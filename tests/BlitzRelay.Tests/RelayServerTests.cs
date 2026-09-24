@@ -1,6 +1,7 @@
 using BlitzRelay.Networking;
 using BlitzRelay.Protocol;
 using BlitzRelay.Rooms;
+using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -18,6 +19,18 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 	private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(10);
 
 	private static readonly TimeSpan NegativeWaitTimeout = TimeSpan.FromSeconds(2);
+
+	/// <summary>
+	/// How long a peer waits before handshaking again so the relay takes it as a reconnect. A handshake from a connected
+	/// endpoint within a second of the relay's own handshake to it is taken as the answer to that handshake instead.
+	/// </summary>
+	private static readonly TimeSpan HandshakeAnswerWindowClearance = TimeSpan.FromMilliseconds(1200);
+
+	/// <summary>
+	/// How long the relay's poll thread is held inside a stalled payload. It is long enough for a peer to put everything
+	/// that follows the stalled payload on the wire before the relay drains on.
+	/// </summary>
+	private static readonly TimeSpan PayloadStall = TimeSpan.FromMilliseconds(250);
 
 	[Fact]
 	public void HostAndClientExchangeDataThroughTheRelay()
@@ -205,6 +218,66 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		Assert.True(relay.Server.GetRoomSnapshot(roomCode)!.HasHost);
 	}
 
+	/// <summary>
+	/// A promoted client that comes back as the host from the socket it already has is not dropped by the disconnect its
+	/// acknowledgement queued.
+	/// </summary>
+	/// <param name="isDisconnectingFirst">True when the client disconnects before it handshakes again.</param>
+	/// <remarks>
+	/// Acknowledging a promotion queues the peer's disconnect, and the client can close or handshake again before the relay
+	/// flushes that queue. A handshake from the same endpoint reuses the relay's connection object for the new session, so a
+	/// stale entry would end the host that just came back.
+	/// </remarks>
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public void PromotedClientReturningFromTheSameSocketIsNotDroppedByItsQueuedDisconnect(bool isDisconnectingFirst)
+	{
+		PayloadStallingLogger logger = new(output);
+
+		using RelayHostFixture relay = new(logger, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		Assert.True(relay.Server.TryCreateReservedRoom(maximumClients: 4, "returning-host-room", isPublic: true, metadata: null, out RoomSnapshot? snapshot, out ErrorCode _));
+
+		string roomCode = snapshot!.Code;
+
+		using RelayTestPeer peer = new();
+
+		peer.Connect(relay.Port, WaitTimeout);
+
+		peer.Authenticate(ConnectionKey);
+
+		peer.Send(MessageCodec.CreateClientJoin(roomCode), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadHostPromoted(peer.WaitForMessage(MessageType.HostPromoted, WaitTimeout), out string _, out int _, out string claimToken));
+
+		Thread.Sleep(HandshakeAnswerWindowClearance);
+
+		/* The relay is held inside the acknowledgement, so what the peer sends behind it is drained in the same poll: the
+		 * peer is queued for disconnect and already back in a new session when the queue is flushed. */
+		logger.StallNextPayload();
+
+		peer.Send(MessageCodec.CreateHostPromotionAck(roomCode, claimToken), isReliable: true);
+
+		if (isDisconnectingFirst) peer.Disconnect();
+
+		peer.Connect(relay.Port, WaitTimeout);
+
+		/* Only a session the flush left alone can claim the room. */
+
+		peer.Authenticate(ConnectionKey);
+
+		peer.Send(MessageCodec.CreateHostClaim(roomCode, claimToken), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadRoomCreated(peer.WaitForMessage(MessageType.RoomCreated, WaitTimeout), out string claimedRoomCode, out string _));
+
+		Assert.Equal(roomCode, claimedRoomCode);
+
+		Assert.False(peer.IsClosed);
+	}
+
 	// SynapseSocket only moves datagrams while Poll is running, so a relay that paced its poll loop on the thread pool
 	// would stop relaying whenever the pool was busy, which in this process it always could be: the HTTP admin API runs
 	// on the same pool. The poll loop owns a thread, and this pins that.
@@ -367,6 +440,49 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 			Thread.Sleep(TimeSpan.FromMilliseconds(50));
 
 			_release.Dispose();
+		}
+	}
+
+	/// <summary>
+	/// Holds the relay's poll thread for a moment inside the next relay payload it logs, so whatever reaches the relay's
+	/// socket meanwhile is drained in the same poll as that payload rather than in whichever poll it happens to land.
+	/// </summary>
+	private sealed class PayloadStallingLogger(ITestOutputHelper output) : ILogger<Server>
+	{
+		/// <summary>
+		/// The logger every entry is written through.
+		/// </summary>
+		private readonly TestOutputLogger<Server> _logger = new(output);
+
+		/// <summary>
+		/// True when the next relay payload logged should stall the poll thread.
+		/// </summary>
+		private volatile bool _isStallArmed;
+
+		/// <summary>
+		/// Arms a stall for the next relay payload the relay logs.
+		/// </summary>
+		public void StallNextPayload() => _isStallArmed = true;
+
+		/// <inheritdoc/>
+		public IDisposable? BeginScope<T0>(T0 state) where T0 : notnull => null;
+
+		/// <inheritdoc/>
+		public bool IsEnabled(LogLevel logLevel) => _logger.IsEnabled(logLevel);
+
+		/// <summary>
+		/// Writes the entry, then holds the calling thread for <see cref="PayloadStall"/> when it is the relay payload a stall
+		/// was armed for.
+		/// </summary>
+		public void Log<T0>(LogLevel logLevel, EventId eventId, T0 state, Exception? exception, Func<T0, Exception?, string> formatter)
+		{
+			_logger.Log(logLevel, eventId, state, exception, formatter);
+
+			if (!_isStallArmed || eventId.Name != nameof(Networking.Log.RelayPayloadReceived)) return;
+
+			_isStallArmed = false;
+
+			Thread.Sleep(PayloadStall);
 		}
 	}
 

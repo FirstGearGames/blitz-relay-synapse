@@ -149,6 +149,8 @@ internal sealed class Server : IDisposable
 
 		_synapseManager.ConnectionClosed += HandleConnectionClosed;
 
+		_synapseManager.ConnectionReleased += HandleConnectionReleased;
+
 		_synapseManager.ConnectionFailed += HandleConnectionFailed;
 
 		_synapseManager.PacketReceived += HandlePacketReceived;
@@ -430,6 +432,8 @@ internal sealed class Server : IDisposable
 
 		_synapseManager.ConnectionClosed -= HandleConnectionClosed;
 
+		_synapseManager.ConnectionReleased -= HandleConnectionReleased;
+
 		_synapseManager.ConnectionFailed -= HandleConnectionFailed;
 
 		_synapseManager.PacketReceived -= HandlePacketReceived;
@@ -586,6 +590,26 @@ internal sealed class Server : IDisposable
 			}
 
 			session.Clear();
+		}
+	}
+
+	/// <summary>
+	/// Drops every queued disconnect for the released connection, because the session it was queued for has ended.
+	/// </summary>
+	/// <remarks>
+	/// SynapseSocket raises this at the end of the poll that closed the connection, or straight after the
+	/// <see cref="SynapseManager.ConnectionClosed"/> of a reconnect from the same endpoint, which goes on to reuse the
+	/// connection for a new session.
+	/// Both happen before <see cref="FlushPendingDisconnectsLocked"/> runs, so a queued entry can never reach the flush
+	/// and end the session that replaced the one it was meant for.
+	/// </remarks>
+	private void HandleConnectionReleased(ConnectionEventArgs connectionEventArgs)
+	{
+		SynapseConnection connection = connectionEventArgs.Connection;
+
+		lock (_mutex)
+		{
+			_pendingDisconnects.RemoveAll(session => session.Connection == connection);
 		}
 	}
 
@@ -1362,6 +1386,13 @@ internal sealed class Server : IDisposable
 		_pendingDisconnects.Add(session);
 	}
 
+	/// <summary>
+	/// Disconnects every session queued by <see cref="DisconnectPeer"/>.
+	/// </summary>
+	/// <remarks>
+	/// No entry here is stale: <see cref="HandleConnectionReleased"/> has already dropped every session whose connection
+	/// closed, or was reused by a reconnect, before this runs.
+	/// </remarks>
 	private void FlushPendingDisconnectsLocked()
 	{
 		// Indexed rather than enumerated on purpose: closing one peer can queue another (a room teardown cascades),
@@ -1369,12 +1400,6 @@ internal sealed class Server : IDisposable
 		for (int i = 0; i < _pendingDisconnects.Count; i++)
 		{
 			PeerConnection session = _pendingDisconnects[i];
-
-			if (session.Connection.State == ConnectionState.Disconnected) continue;
-
-			// The peer may have handshaked again between being queued and being flushed, in which case this session is
-			// stale and the connection now belongs to the session that replaced it.
-			if (_sessionsByConnection.TryGetValue(session.Connection, out PeerConnection? currentSession) && !ReferenceEquals(currentSession, session)) continue;
 
 			try
 			{

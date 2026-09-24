@@ -1,4 +1,5 @@
 using BlitzRelay.Networking;
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Sockets;
 using Xunit.Abstractions;
@@ -21,13 +22,27 @@ internal sealed class RelayHostFixture : IDisposable
 
 	private readonly Task<int> _runTask;
 
-	public RelayHostFixture(ITestOutputHelper output, string connectionKey)
+	/// <summary>
+	/// Starts a relay that logs to the test's output.
+	/// </summary>
+	/// <param name="output">The test's output sink.</param>
+	/// <param name="connectionKey">The key the relay admits peers with.</param>
+	public RelayHostFixture(ITestOutputHelper output, string connectionKey) : this(new TestOutputLogger<Server>(output), connectionKey)
+	{
+	}
+
+	/// <summary>
+	/// Starts a relay that logs through <paramref name="logger"/>.
+	/// </summary>
+	/// <param name="logger">The logger the relay writes through.</param>
+	/// <param name="connectionKey">The key the relay admits peers with.</param>
+	public RelayHostFixture(ILogger<Server> logger, string connectionKey)
 	{
 		Port = ReserveUdpPort();
 
 		_cancellation = new CancellationTokenSource();
 
-		_server = new Server(Port, connectionKey, new TestOutputLogger<Server>(output));
+		_server = new Server(Port, connectionKey, logger);
 
 		_runTask = _server.RunAsync(_cancellation.Token);
 	}

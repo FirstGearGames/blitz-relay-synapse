@@ -2,6 +2,7 @@ extern alias nucleus;
 
 using System.Diagnostics;
 using nucleus::Nucleus.Connections;
+using nucleus::Nucleus.Managers.Messages;
 using nucleus::Nucleus.Managers.Server;
 using nucleus::Nucleus.Transports;
 using Xunit.Abstractions;
@@ -49,7 +50,7 @@ public sealed class NucleusRelayAllocationTests(ITestOutputHelper output)
 		TickUntil(() => isAuthenticated && clientConnection is not null, WaitTimeout, "the session to form", host, client);
 
 		int receivedCount = 0;
-		client.CoreManager.MessageManager.RegisterMessageHandler<SessionDirectoryMessage>((channel, sender, message) => receivedCount++);
+		client.CoreManager.MessageManager.RegisterMessageHandler<SessionDirectoryMessage>((in MessageContext messageContext, SessionDirectoryMessage message) => receivedCount++);
 
 		/* Both measurements run on this thread, and every peer is driven by hand, so a thread-local count is the whole of what
 		   the session costs. Warmed first: pools fill, queues size themselves, and the first message of a kind pays for things

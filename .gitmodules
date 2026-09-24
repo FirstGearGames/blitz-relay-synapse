@@ -1,3 +1,6 @@
 [submodule "submodules/SynapseSocket"]
 	path = submodules/SynapseSocket
 	url = https://github.com/FirstGearGames/SynapseSocket.git
+[submodule "submodules/CodeBoost"]
+	path = submodules/CodeBoost
+	url = https://github.com/FirstGearGames/CodeBoost

@@ -2,6 +2,7 @@ extern alias nucleus;
 
 using System.Diagnostics;
 using nucleus::Nucleus.Connections;
+using nucleus::Nucleus.Managers.Messages;
 using nucleus::Nucleus.Managers.Server;
 using nucleus::Nucleus.Transports;
 using Xunit.Abstractions;
@@ -61,7 +62,7 @@ public sealed class NucleusRelayTransportTests(ITestOutputHelper output)
 		const ulong SessionId = 0xA71F_39C4_5E82_10DB;
 
 		ulong receivedSessionId = 0;
-		client.CoreManager.MessageManager.RegisterMessageHandler<SessionDirectoryMessage>((channel, sender, message) => receivedSessionId = message.SessionId);
+		client.CoreManager.MessageManager.RegisterMessageHandler<SessionDirectoryMessage>((in MessageContext messageContext, SessionDirectoryMessage message) => receivedSessionId = message.SessionId);
 
 		Assert.NotNull(authenticatedClientConnection);
 

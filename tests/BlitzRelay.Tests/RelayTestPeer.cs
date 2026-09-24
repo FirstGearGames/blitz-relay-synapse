@@ -84,7 +84,7 @@ internal sealed class RelayTestPeer : IDisposable
 
 		_synapseManager.ConnectionEstablished += _ => _isConnected = true;
 
-		_synapseManager.ConnectionClosed += _ => _isClosed = true;
+		_synapseManager.ConnectionClosed += HandleConnectionClosed;
 
 		_synapseManager.PacketReceived += HandlePacketReceived;
 
@@ -119,10 +119,22 @@ internal sealed class RelayTestPeer : IDisposable
 		}
 	}
 
-	// A handshake is a single unacknowledged datagram, so a peer that hears nothing back sends another one.
+	/// <summary>
+	/// Connects to the relay, handshaking again each second until it answers or <paramref name="timeout"/> passes.
+	/// </summary>
+	/// <param name="relayPort">The loopback port the relay listens on.</param>
+	/// <param name="timeout">How long to keep trying.</param>
+	/// <remarks>
+	/// A handshake is a single unacknowledged datagram, so a peer that hears nothing back sends another one. Calling this
+	/// again reconnects from the same socket, which the relay sees as the same endpoint handshaking again.
+	/// </remarks>
 	public void Connect(int relayPort, TimeSpan timeout)
 	{
 		IPEndPoint relayEndPoint = new(IPAddress.Loopback, relayPort);
+
+		_isConnected = false;
+
+		_isClosed = false;
 
 		long startedTimestamp = Stopwatch.GetTimestamp();
 
@@ -130,6 +142,10 @@ internal sealed class RelayTestPeer : IDisposable
 		{
 			lock (_mutex)
 			{
+				// Dropped first: SynapseSocket closes the connection a new Connect replaces, and that is not the relay
+				// closing this peer.
+				_connection = null;
+
 				_connection = _synapseManager.Connect(relayEndPoint);
 			}
 
@@ -147,11 +163,22 @@ internal sealed class RelayTestPeer : IDisposable
 		Thread.Sleep(TimeSpan.FromMilliseconds(100));
 	}
 
+	/// <summary>
+	/// Sends a payload to the relay.
+	/// </summary>
+	/// <param name="payload">The payload to send.</param>
+	/// <param name="isReliable">True to send it reliably.</param>
+	/// <remarks>
+	/// A peer the relay has closed has no connection left to send on, so the send goes nowhere, as it would from a real
+	/// client that had been dropped.
+	/// </remarks>
 	public void Send(byte[] payload, bool isReliable)
 	{
 		lock (_mutex)
 		{
-			_synapseManager.Send(_connection!, payload, isReliable);
+			if (_connection is null) return;
+
+			_synapseManager.Send(_connection, payload, isReliable);
 		}
 	}
 
@@ -162,8 +189,6 @@ internal sealed class RelayTestPeer : IDisposable
 			if (_connection is null) return;
 
 			_synapseManager.Disconnect(_connection);
-
-			_connection = null;
 		}
 	}
 
@@ -231,6 +256,26 @@ internal sealed class RelayTestPeer : IDisposable
 		message = null;
 
 		return false;
+	}
+
+	/// <summary>
+	/// Records that this peer's connection has closed and drops it, because SynapseSocket refuses to send on a closed
+	/// connection.
+	/// </summary>
+	/// <remarks>
+	/// Only the current connection counts: the one a new <see cref="Connect"/> replaces is closed by SynapseSocket
+	/// itself, which does not close this peer.
+	/// </remarks>
+	private void HandleConnectionClosed(SynapseSocket.Core.Events.ConnectionEventArgs connectionEventArgs)
+	{
+		lock (_mutex)
+		{
+			if (connectionEventArgs.Connection != _connection) return;
+
+			_connection = null;
+
+			_isClosed = true;
+		}
 	}
 
 	private void HandlePacketReceived(SynapseSocket.Core.Events.PacketReceivedEventArgs packetReceivedEventArgs)

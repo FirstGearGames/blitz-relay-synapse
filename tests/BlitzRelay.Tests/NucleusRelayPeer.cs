@@ -53,7 +53,7 @@ internal sealed class NucleusRelayPeer : IDisposable
 	// authority the object comes back in Starting with no id yet, and the caller drives until it has one.
 	public NetworkSystem SpawnObject(uint platformId)
 	{
-		NetworkSystem networkSystem = NetworkSystemPool.Rent<NetworkSystem, TransformComponent>(CoreManager, startSystem: false)!;
+		NetworkSystem networkSystem = NetworkSystemPool.Rent<NetworkSystem, TransformComponent>(CoreManager, canStartSystem: false)!;
 
 		Assert.True(CoreManager.SystemManager.EnsureStartSystem(networkSystem, platformId, isSceneObject: false), "The engine would not start an object.");
 

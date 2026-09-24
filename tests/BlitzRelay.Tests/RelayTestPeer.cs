@@ -23,7 +23,7 @@ internal sealed class RelayTestPeer : IDisposable
 	// Null when the caller pumps this peer itself, which is how a test can run hundreds of peers without a thread each.
 	private readonly Thread? _pumpThread;
 
-	private readonly Lock _mutex = new();
+	private readonly object _mutex = new();
 
 	private readonly List<byte[]> _receivedMessages;
 

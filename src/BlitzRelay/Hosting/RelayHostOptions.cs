@@ -19,8 +19,10 @@ public sealed class RelayHostOptions
 
 	public byte[] HttpAdminTokenBytes
 	{
-		get => field ??= Encoding.UTF8.GetBytes(HttpAdminToken);
+		get => _httpAdminTokenBytes ??= Encoding.UTF8.GetBytes(HttpAdminToken);
 	}
 
 	public required CorsConfiguration? Cors { get; init; }
+
+	private byte[]? _httpAdminTokenBytes;
 }

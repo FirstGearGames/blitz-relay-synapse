@@ -51,7 +51,7 @@ If the repository is already cloned, run `git submodule update --init --recursiv
 
 ### Prerequisites
 
-- .NET 10.0 runtime (or use the `standalone` or `native` pre-built binaries)
+- .NET 8.0 runtime with ASP.NET Core (or use the `standalone` or `native` pre-built binaries)
 
 ### Running the Server
 

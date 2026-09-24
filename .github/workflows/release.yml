@@ -47,7 +47,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v5.2.0
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '8.x'
 
       - name: Publish BlitzRelay
         run: dotnet publish src/BlitzRelay/BlitzRelay.csproj -c Release -r ${{ matrix.rid }} -p:PublishSingleFile=true -p:Flavour=${{ matrix.flavour }}
@@ -56,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: BlitzRelay-${{ matrix.rid }}-${{ matrix.flavour }}
-          path: src/BlitzRelay/bin/Release/net10.0/${{ matrix.rid }}/publish/
+          path: src/BlitzRelay/bin/Release/net8.0/${{ matrix.rid }}/publish/
 
   test:
     runs-on: ubuntu-latest
@@ -68,7 +68,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v5.2.0
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '8.x'
 
       - name: Test BlitzRelay
         run: dotnet test tests/BlitzRelay.Tests/BlitzRelay.Tests.csproj -c Release
@@ -81,7 +81,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v5.2.0
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '8.x'
 
       - name: Build BlitzRelay.Protocol
         run: dotnet build src/BlitzRelay.Protocol/BlitzRelay.Protocol.csproj -c Release

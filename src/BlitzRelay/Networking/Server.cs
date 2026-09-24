@@ -66,7 +66,7 @@ internal sealed class Server : IDisposable
 
 	// SynapseSocket is single-threaded: this lock is what keeps the poll loop and the HTTP admin threads off each
 	// other's toes, so every path that reaches the engine has to hold it.
-	private readonly Lock _mutex = new();
+	private readonly object _mutex = new();
 
 	private readonly int _port;
 

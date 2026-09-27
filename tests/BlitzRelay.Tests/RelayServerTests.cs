@@ -116,6 +116,8 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		Assert.True(MessageCodec.TryReadDisconnected(disconnected, out int disconnectedVirtualClientId));
 
 		Assert.Equal(virtualClientId, disconnectedVirtualClientId);
+
+		Assert.Equal(0, relay.Server.GetRoomSnapshot(roomCode)!.ConnectedClientCount);
 	}
 
 	[Fact]
@@ -353,6 +355,156 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		server.Dispose();
 
 		Assert.True(runTask.Wait(TimeSpan.FromSeconds(5)), "The poll loop was still running after the relay was disposed.");
+	}
+
+	/// <summary>
+	/// Stopping the relay takes every peer out of the rooms it held a place in, as host, client or pending host.
+	/// </summary>
+	/// <remarks>
+	/// Stopping SynapseSocket releases every open connection without closing it, and a released connection object may be
+	/// handed to another peer. A room that kept one would send to or disconnect that other peer the next time the admin
+	/// API reached it, and the admin API outlives the poll loop. Disposing the relay joins the poll loop, whose shutdown is
+	/// the stop, so the rooms are read once it has finished.
+	/// </remarks>
+	[Fact]
+	public void StoppingTheRelayTakesEveryPeerOutOfItsRoom()
+	{
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		/* A host-owned room with a host and a client. */
+
+		using RelayTestPeer ephemeralHost = new();
+
+		using RelayTestPeer ephemeralClient = new();
+
+		ephemeralHost.Connect(relay.Port, WaitTimeout);
+
+		ephemeralHost.Authenticate(ConnectionKey);
+
+		ephemeralHost.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadRoomCreated(ephemeralHost.WaitForMessage(MessageType.RoomCreated, WaitTimeout), out string ephemeralRoomCode, out string _));
+
+		ephemeralClient.Connect(relay.Port, WaitTimeout);
+
+		ephemeralClient.Authenticate(ConnectionKey);
+
+		ephemeralClient.Send(MessageCodec.CreateClientJoin(ephemeralRoomCode), isReliable: true);
+
+		ephemeralClient.WaitForMessage(MessageType.JoinSuccess, WaitTimeout);
+
+		/* A reserved room with a client promoted to host but not yet back, and a client waiting on it. */
+
+		Assert.True(relay.Server.TryCreateReservedRoom(maximumClients: 4, "pending-host-room", isPublic: true, metadata: null, out RoomSnapshot? pendingRoomSnapshot, out ErrorCode _));
+
+		string pendingRoomCode = pendingRoomSnapshot!.Code;
+
+		using RelayTestPeer promotedClient = new();
+
+		using RelayTestPeer waitingClient = new();
+
+		promotedClient.Connect(relay.Port, WaitTimeout);
+
+		promotedClient.Authenticate(ConnectionKey);
+
+		promotedClient.Send(MessageCodec.CreateClientJoin(pendingRoomCode), isReliable: true);
+
+		promotedClient.WaitForMessage(MessageType.HostPromoted, WaitTimeout);
+
+		waitingClient.Connect(relay.Port, WaitTimeout);
+
+		waitingClient.Authenticate(ConnectionKey);
+
+		waitingClient.Send(MessageCodec.CreateClientJoin(pendingRoomCode), isReliable: true);
+
+		waitingClient.WaitForMessage(MessageType.JoinSuccess, WaitTimeout);
+
+		/* A reserved room with a host that claimed it. */
+
+		Assert.True(relay.Server.TryCreateReservedRoom(maximumClients: 4, "claimed-host-room", isPublic: true, metadata: null, out RoomSnapshot? claimedRoomSnapshot, out ErrorCode _));
+
+		string claimedRoomCode = claimedRoomSnapshot!.Code;
+
+		using RelayTestPeer claimingClient = new();
+
+		using RelayTestPeer claimedHost = new();
+
+		claimingClient.Connect(relay.Port, WaitTimeout);
+
+		claimingClient.Authenticate(ConnectionKey);
+
+		claimingClient.Send(MessageCodec.CreateClientJoin(claimedRoomCode), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadHostPromoted(claimingClient.WaitForMessage(MessageType.HostPromoted, WaitTimeout), out string _, out int _, out string claimToken));
+
+		claimingClient.Send(MessageCodec.CreateHostPromotionAck(claimedRoomCode, claimToken), isReliable: true);
+
+		claimingClient.WaitUntilClosed(WaitTimeout);
+
+		claimedHost.Connect(relay.Port, WaitTimeout);
+
+		claimedHost.Authenticate(ConnectionKey);
+
+		claimedHost.Send(MessageCodec.CreateHostClaim(claimedRoomCode, claimToken), isReliable: true);
+
+		claimedHost.WaitForMessage(MessageType.RoomCreated, WaitTimeout);
+
+		RoomSnapshot ephemeralRoomBeforeStop = relay.Server.GetRoomSnapshot(ephemeralRoomCode)!;
+
+		Assert.True(ephemeralRoomBeforeStop.HasHost);
+
+		Assert.Equal(1, ephemeralRoomBeforeStop.ConnectedClientCount);
+
+		RoomSnapshot pendingRoomBeforeStop = relay.Server.GetRoomSnapshot(pendingRoomCode)!;
+
+		Assert.True(pendingRoomBeforeStop.HasPendingHostClaim);
+
+		Assert.Equal(1, pendingRoomBeforeStop.ConnectedClientCount);
+
+		Assert.True(relay.Server.GetRoomSnapshot(claimedRoomCode)!.HasHost);
+
+		relay.Server.Dispose();
+
+		/* A host-owned room ends with its host. */
+
+		Assert.Null(relay.Server.GetRoomSnapshot(ephemeralRoomCode));
+
+		/* A reserved room outlives its peers, but holds none of them. */
+
+		RoomSnapshot pendingRoomAfterStop = relay.Server.GetRoomSnapshot(pendingRoomCode)!;
+
+		Assert.False(pendingRoomAfterStop.HasPendingHostClaim);
+
+		Assert.False(pendingRoomAfterStop.HasHost);
+
+		Assert.Equal(0, pendingRoomAfterStop.ConnectedClientCount);
+
+		Assert.False(relay.Server.GetRoomSnapshot(claimedRoomCode)!.HasHost);
+	}
+
+	/// <summary>
+	/// A disposed test peer lets go of its connection, so a send afterwards goes nowhere instead of reaching the engine.
+	/// </summary>
+	/// <remarks>
+	/// Disposing SynapseSocket releases the peer's open connection without closing it, and a released connection object
+	/// may be handed to another peer on the same thread.
+	/// </remarks>
+	[Fact]
+	public void DisposedTestPeerLetsGoOfItsConnection()
+	{
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		RelayTestPeer peer = new();
+
+		peer.Connect(relay.Port, WaitTimeout);
+
+		peer.Dispose();
+
+		Assert.Null(Record.Exception(() => peer.Send(MessageCodec.CreateHostRegister(4), isReliable: true)));
 	}
 
 	private static int ReserveUdpPort()

@@ -335,7 +335,10 @@ internal sealed class Server : IDisposable
 		{
 			UnsubscribeFromTransport();
 
+			// Disposing raises ConnectionReleased for every open connection, which is what empties the rooms.
 			_synapseManager.Dispose();
+
+			_synapseManager.ConnectionReleased -= HandleConnectionReleased;
 
 			_sessionsByConnection.Clear();
 
@@ -415,7 +418,10 @@ internal sealed class Server : IDisposable
 			{
 				UnsubscribeFromTransport();
 
+				// Stopping raises ConnectionReleased for every open connection, which is what empties the rooms.
 				_synapseManager.Stop();
+
+				_synapseManager.ConnectionReleased -= HandleConnectionReleased;
 
 				_sessionsByConnection.Clear();
 
@@ -425,14 +431,14 @@ internal sealed class Server : IDisposable
 	}
 
 	// Detached before the engine is stopped or disposed so a late callback cannot walk rooms that are being torn down.
-	// Unsubscribing twice is harmless, and both shutdown paths do it.
+	// ConnectionReleased is left attached: stopping raises it, and no ConnectionClosed, for every open connection, so
+	// both shutdown paths detach it only once the engine has stopped. Unsubscribing twice is harmless, and both shutdown
+	// paths do it.
 	private void UnsubscribeFromTransport()
 	{
 		_synapseManager.ConnectionEstablished -= HandleConnectionEstablished;
 
 		_synapseManager.ConnectionClosed -= HandleConnectionClosed;
-
-		_synapseManager.ConnectionReleased -= HandleConnectionReleased;
 
 		_synapseManager.ConnectionFailed -= HandleConnectionFailed;
 
@@ -488,8 +494,8 @@ internal sealed class Server : IDisposable
 		CloseSession(connectionEventArgs.Connection);
 	}
 
-	// Idempotent on purpose: a peer can be reported gone by both a lifecycle violation and a ConnectionClosed event, and
-	// whichever arrives first is the one that tears the session down.
+	// Idempotent on purpose: a peer can be reported gone by a lifecycle violation, a ConnectionClosed event and the
+	// ConnectionReleased that follows, and whichever arrives first is the one that tears the session down.
 	private void CloseSession(SynapseConnection? connection)
 	{
 		if (connection is null) return;
@@ -594,13 +600,18 @@ internal sealed class Server : IDisposable
 	}
 
 	/// <summary>
-	/// Drops every queued disconnect for the released connection, because the session it was queued for has ended.
+	/// Drops every reference the relay holds to the released connection: its session, the room seat that session held,
+	/// and every queued disconnect for it.
 	/// </summary>
 	/// <remarks>
-	/// SynapseSocket raises this at the end of the poll that closed the connection, or straight after the
+	/// SynapseSocket raises this at the end of the poll that closed the connection, straight after the
 	/// <see cref="SynapseManager.ConnectionClosed"/> of a reconnect from the same endpoint, which goes on to reuse the
-	/// connection for a new session.
-	/// Both happen before <see cref="FlushPendingDisconnectsLocked"/> runs, so a queued entry can never reach the flush
+	/// connection for a new session, and for every open connection when the engine is stopped or disposed.
+	/// Once this returns, SynapseSocket may hand the connection object to another peer, so nothing may keep it.
+	/// On the first two paths <see cref="CloseSession"/> has already run, so running it again does nothing. Stopping raises
+	/// no <see cref="SynapseManager.ConnectionClosed"/>, so on that path this is what closes the session and empties its
+	/// room seat, and sends are already refused by then, so nothing reaches the wire.
+	/// Every path runs this before <see cref="FlushPendingDisconnectsLocked"/>, so a queued entry can never reach the flush
 	/// and end the session that replaced the one it was meant for.
 	/// </remarks>
 	private void HandleConnectionReleased(ConnectionEventArgs connectionEventArgs)
@@ -609,7 +620,9 @@ internal sealed class Server : IDisposable
 
 		lock (_mutex)
 		{
-			_pendingDisconnects.RemoveAll(session => session.Connection == connection);
+			CloseSession(connection);
+
+			_pendingDisconnects.RemoveAll(session => ReferenceEquals(session.Connection, connection));
 		}
 	}
 

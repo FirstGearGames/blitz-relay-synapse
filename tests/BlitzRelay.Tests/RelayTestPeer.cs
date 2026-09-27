@@ -86,6 +86,8 @@ internal sealed class RelayTestPeer : IDisposable
 
 		_synapseManager.ConnectionClosed += HandleConnectionClosed;
 
+		_synapseManager.ConnectionReleased += HandleConnectionReleased;
+
 		_synapseManager.PacketReceived += HandlePacketReceived;
 
 		_synapseManager.Start();
@@ -275,6 +277,24 @@ internal sealed class RelayTestPeer : IDisposable
 			_connection = null;
 
 			_isClosed = true;
+		}
+	}
+
+	/// <summary>
+	/// Drops this peer's connection once SynapseSocket has released it, because the object may then be handed to another
+	/// connection on the same thread.
+	/// </summary>
+	/// <remarks>
+	/// A close has normally dropped it already. Disposing raises no close, only this, so without it a disposed peer
+	/// would keep a released connection that a later <see cref="Send"/> or <see cref="Disconnect"/> could still reach.
+	/// </remarks>
+	private void HandleConnectionReleased(SynapseSocket.Core.Events.ConnectionEventArgs connectionEventArgs)
+	{
+		lock (_mutex)
+		{
+			if (!ReferenceEquals(connectionEventArgs.Connection, _connection)) return;
+
+			_connection = null;
 		}
 	}
 

@@ -219,7 +219,7 @@ See the `BlitzRelay.Protocol` library for the full message codec API.
 | Maximum datagram            | 1400 bytes           | A larger datagram raises an oversized violation                  |
 | Maximum unreliable payload  | 1197 bytes           | Unreliable game data is never segmented; larger payloads are dropped |
 | Maximum reliable payload    | 64 KB                | Larger payloads are rejected rather than relayed                 |
-| Rate limit                  | 2000 packets/second, 4 MB/second | Per peer; a peer over the limit is dropped and blacklisted |
+| Rate limit                  | 2000 packets/second, 4 MB/second | Per peer; packets over the limit are dropped, and the peer stays connected |
 | Keep-alive / timeout        | 2 s / 30 s           | An idle peer is disconnected after the timeout                   |
 
 ## Configuration Reference

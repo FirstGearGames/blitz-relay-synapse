@@ -53,7 +53,7 @@ internal sealed class NucleusRelayPeer : IDisposable
 	// authority the object comes back in Starting with no id yet, and the caller drives until it has one.
 	public NetworkSystem SpawnObject(uint platformId)
 	{
-		NetworkSystem networkSystem = NetworkSystemPool.Rent<NetworkSystem, TransformComponent>(CoreManager, canStartSystem: false)!;
+		Assert.True(NetworkSystemPool.TryRent<NetworkSystem, TransformComponent>(CoreManager, out NetworkSystem networkSystem, canStartSystem: false), "The engine would not rent an object.");
 
 		Assert.True(CoreManager.SystemManager.EnsureStartSystem(networkSystem, platformId, isSceneObject: false), "The engine would not start an object.");
 
@@ -94,16 +94,15 @@ internal sealed class NucleusRelayPeer : IDisposable
 		StepDelta stepDelta = new(0, 0, 0);
 
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyVariableUpdate, stepDelta);
-		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyTickUpdate, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyStateUpdate, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateStateUpdate, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.Reconcile, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyFixedUpdate, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateFixedUpdate, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.VariableUpdate, stepDelta);
-		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlyStateWrite, stepDelta);
-		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateStateWrite, stepDelta);
-		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateTickUpdate, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.EarlySerialize, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateSerialize, stepDelta);
+		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.TickAdvance, stepDelta);
 		networkLoopManager.InvokeNetworkLoopStep(NetworkLoopSteps.LateVariableUpdate, stepDelta);
 	}
 
@@ -129,6 +128,9 @@ internal sealed class NucleusRelayPeer : IDisposable
 	{
 		public bool IsStarted { get; private set; }
 
+		// Every pass a test drives is a tick.
+		public bool IsTickFrame => true;
+
 		public void Initialize(NetworkLoopManager networkLoopManager) { }
 
 		public void Start() => IsStarted = true;
@@ -143,12 +145,11 @@ internal sealed class NucleusRelayPeer : IDisposable
 	{
 		public NetworkLoopSteps GetNetworkLoopSteps() =>
 			NetworkLoopSteps.EarlyVariableUpdate
-			| NetworkLoopSteps.EarlyTickUpdate
 			| NetworkLoopSteps.EarlyStateUpdate
 			| NetworkLoopSteps.LateStateUpdate
-			| NetworkLoopSteps.EarlyStateWrite
-			| NetworkLoopSteps.LateStateWrite
-			| NetworkLoopSteps.LateTickUpdate
+			| NetworkLoopSteps.EarlySerialize
+			| NetworkLoopSteps.LateSerialize
+			| NetworkLoopSteps.TickAdvance
 			| NetworkLoopSteps.LateVariableUpdate;
 
 		public void OnNetworkLoopStep(NetworkLoopSteps networkLoopStep, StepDelta stepDelta) { }

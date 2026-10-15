@@ -120,6 +120,65 @@ public sealed class RelayServerTests(ITestOutputHelper output)
 		Assert.Equal(0, relay.Server.GetRoomSnapshot(roomCode)!.ConnectedClientCount);
 	}
 
+	/// <summary>
+	/// A host fanning out a steady 2100 datagrams a second for three seconds, as 16 clients at 128 ticks a second need, has every one relayed: the room host is exempt from the per-peer rate limit.
+	/// </summary>
+	[Fact]
+	public void HostFanningOutPastTwoThousandPacketsASecond_HasEveryOneRelayed()
+	{
+		const int PacketCount = 6300;
+
+		const int BurstCount = 63;
+
+		using RelayHostFixture relay = new(output, ConnectionKey);
+
+		relay.WaitUntilStarted();
+
+		using RelayTestPeer host = new();
+
+		using RelayTestPeer client = new() { CountDataOnly = true };
+
+		host.Connect(relay.Port, WaitTimeout);
+
+		host.Authenticate(ConnectionKey);
+
+		host.Send(MessageCodec.CreateHostRegister(4), isReliable: true);
+
+		Assert.True(MessageCodec.TryReadRoomCreated(host.WaitForMessage(MessageType.RoomCreated, WaitTimeout), out string roomCode, out string _));
+
+		client.Connect(relay.Port, WaitTimeout);
+
+		client.Authenticate(ConnectionKey);
+
+		client.Send(MessageCodec.CreateClientJoin(roomCode), isReliable: true);
+
+		client.WaitForMessage(MessageType.JoinSuccess, WaitTimeout);
+
+		Assert.True(MessageCodec.TryReadConnected(host.WaitForMessage(MessageType.Connected, WaitTimeout), out int virtualClientId));
+
+		byte[] payload = CreatePayload(32);
+
+		/* Spread across just under a second, as a tick-paced host would send them, so the count is what a second's limit sees. */
+		for (int burstIndex = 0; burstIndex < BurstCount; burstIndex++)
+		{
+			for (int packetIndex = 0; packetIndex < PacketCount / BurstCount; packetIndex++)
+				host.Send(MessageCodec.CreateHostData(virtualClientId, (byte)GameChannel.Unreliable, payload), isReliable: false);
+
+			Thread.Sleep(45);
+		}
+
+		Stopwatch stopwatch = Stopwatch.StartNew();
+
+		while (client.DataMessageCount < PacketCount && stopwatch.Elapsed < NegativeWaitTimeout)
+			Thread.Sleep(10);
+
+		output.WriteLine($"The client received [{client.DataMessageCount}] of [{PacketCount}]; the host is closed: [{host.IsClosed}].");
+
+		Assert.False(host.IsClosed, "The relay closed the host for its fan-out.");
+
+		Assert.True(client.DataMessageCount >= PacketCount * 99 / 100, $"The client received [{client.DataMessageCount}] of [{PacketCount}].");
+	}
+
 	[Fact]
 	public void RelayRejectsAnInvalidConnectionKey()
 	{
